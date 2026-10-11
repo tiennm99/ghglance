@@ -322,7 +322,7 @@ In Coolify:
 2. Register the [OAuth App](#sign-in-with-github) and set
    `GHGLANCE_OAUTH_CLIENT_ID`, `GHGLANCE_OAUTH_CLIENT_SECRET` and
    `GHGLANCE_PUBLIC_URL` (see [`.env.example`](./.env.example)); the public
-   URL is the domain from step 3, e.g. `https://ghglance.sg.miti99.com`.
+   URL is the domain from step 3, e.g. `https://ghglance.example.com`.
    `compose.yml` requires all three and refuses to start without them.
 3. Keep the generated domain or set your own on the `ghglance` service, then
    deploy.

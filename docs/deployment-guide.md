@@ -110,7 +110,7 @@ the `ghglance-data` volume, and health-checks `/healthz` with busybox
 | --- | --- |
 | `GHGLANCE_OAUTH_CLIENT_ID` | Required. Client ID of the GitHub OAuth App behind "Sign in with GitHub" (`-oauth-client-id`). |
 | `GHGLANCE_OAUTH_CLIENT_SECRET` | Required. That OAuth App's client secret (`-oauth-client-secret`). Never logged or printed. |
-| `GHGLANCE_PUBLIC_URL` | Required. The site's external origin, e.g. `https://ghglance.sg.miti99.com` (`-public-url`). The OAuth App's callback URL must be exactly `<public-url>/auth/callback`. |
+| `GHGLANCE_PUBLIC_URL` | Required. The site's external origin, e.g. `https://ghglance.example.com` (`-public-url`). The OAuth App's callback URL must be exactly `<public-url>/auth/callback`. |
 
 The server holds no GitHub token: every generation runs on the visitor's
 token, either from Sign in with GitHub (revoked when the job ends) or one
