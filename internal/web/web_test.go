@@ -700,15 +700,16 @@ func TestRateLimiterHardCap(t *testing.T) {
 	for i := range maxBuckets {
 		l.Allow(strconv.Itoa(i))
 	}
-	if l.Allow("new") {
-		t.Fatal("new client admitted past the cap while every bucket is busy")
+	// A full table evicts one bucket rather than locking the newcomer out.
+	if !l.Allow("new") {
+		t.Fatal("new client refused while the table is full; want an eviction")
 	}
 	if len(l.buckets) != maxBuckets {
-		t.Fatalf("table grew to %d", len(l.buckets))
+		t.Fatalf("table holds %d buckets, want it capped at %d", len(l.buckets), maxBuckets)
 	}
 	// Once the old buckets have refilled, a sweep frees room again.
 	now = now.Add(time.Hour)
-	if !l.Allow("new") {
+	if !l.Allow("later") {
 		t.Error("new client refused after idle buckets could be swept")
 	}
 	if len(l.buckets) != 1 {
