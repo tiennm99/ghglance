@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      # Plain vX.Y.Z only: a prerelease tag must not move v1 or latest.
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: read
