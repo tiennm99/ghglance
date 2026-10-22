@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +38,7 @@ type fakeGitHub struct {
 
 	mu        sync.Mutex
 	scope     string // scopes granted with the token; "" grants what was asked
+	fail      string // token endpoint failure: "status" (HTTP 500) or "garbage" (not JSON)
 	asked     string // scopes the last sign-in asked for
 	exchanges []url.Values
 	revoked   []string
@@ -46,20 +49,33 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	g := &fakeGitHub{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /login/oauth/access_token", func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		g.mu.Lock()
 		g.exchanges = append(g.exchanges, r.PostForm)
 		scope := cmp.Or(g.scope, strings.ReplaceAll(g.asked, " ", ","))
+		fail := g.fail
 		g.mu.Unlock()
+		switch fail {
+		case "status":
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		case "garbage":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = io.WriteString(w, "<html>unicorn</html>")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		f := r.PostForm
 		if r.Header.Get("Accept") != "application/json" || f.Get("client_id") != testClientID ||
 			f.Get("client_secret") != testClientSecret || f.Get("code") != testCode ||
 			f.Get("redirect_uri") != testPublicURL+"/auth/callback" || f.Get("code_verifier") == "" {
-			json.NewEncoder(w).Encode(map[string]string{"error": "bad_verification_code"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "bad_verification_code"})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"access_token": oauthToken, "token_type": "bearer", "scope": scope})
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": oauthToken, "token_type": "bearer", "scope": scope})
 	})
 	mux.HandleFunc("DELETE /applications/{id}/token", func(w http.ResponseWriter, r *http.Request) {
 		id, secret, ok := r.BasicAuth()
@@ -70,7 +86,10 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		var body struct {
 			AccessToken string `json:"access_token"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		g.mu.Lock()
 		g.revoked = append(g.revoked, body.AccessToken)
 		g.mu.Unlock()
@@ -313,7 +332,7 @@ func TestOAuthFlowRevokesAfterJob(t *testing.T) {
 	}
 
 	// The token, code and client secret never reach disk or the log.
-	filepath.WalkDir(s.store.dir, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(s.store.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
@@ -323,6 +342,9 @@ func TestOAuthFlowRevokesAfterJob(t *testing.T) {
 		}
 		return nil
 	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
+	}
 	out := logs.String()
 	for _, secret := range []string{oauthToken, testClientSecret, testCode, verifier} {
 		if strings.Contains(out, secret) {
@@ -384,24 +406,171 @@ func TestOAuthStateExpires(t *testing.T) {
 	}
 }
 
-func TestPendingLoginsCap(t *testing.T) {
+func TestPendingLoginsEvictEarliestWhenFull(t *testing.T) {
 	l := newPendingLogins()
 	now := time.Now()
 	l.now = func() time.Time { return now }
-	for range maxPendingLogins {
-		if _, err := l.add(&pendingLogin{}); err != nil {
+	var first string
+	for i := range maxPendingLogins {
+		state, err := l.add(&pendingLogin{client: strconv.Itoa(i)})
+		if err != nil {
 			t.Fatal(err)
 		}
+		if i == 0 {
+			first = state
+		}
+		now = now.Add(time.Millisecond)
 	}
-	if _, err := l.add(&pendingLogin{}); err != errTooManyLogins {
-		t.Fatalf("add past the cap = %v", err)
+	state, err := l.add(&pendingLogin{client: "late"})
+	if err != nil {
+		t.Fatalf("add past the cap = %v, want the earliest sign-in evicted", err)
 	}
+	if len(l.entries) != maxPendingLogins {
+		t.Errorf("%d entries, want the cap %d", len(l.entries), maxPendingLogins)
+	}
+	if l.take(first) != nil {
+		t.Error("the earliest-expiring sign-in survived a full table")
+	}
+	if l.take(state) == nil {
+		t.Error("the newest sign-in was not stored")
+	}
+
+	// Expired sign-ins are dropped before anything live is evicted.
 	now = now.Add(loginTTL)
 	if _, err := l.add(&pendingLogin{}); err != nil {
-		t.Errorf("expired entries were not swept: %v", err)
+		t.Fatal(err)
 	}
 	if len(l.entries) != 1 {
 		t.Errorf("%d entries left, want 1", len(l.entries))
+	}
+}
+
+func TestPendingLoginsPerClientCap(t *testing.T) {
+	l := newPendingLogins()
+	now := time.Now()
+	l.now = func() time.Time { return now }
+	var states []string
+	for range maxPendingPerClient + 2 {
+		state, err := l.add(&pendingLogin{client: "203.0.113.7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		states = append(states, state)
+		now = now.Add(time.Second)
+	}
+	other, err := l.add(&pendingLogin{client: "198.51.100.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.entries) != maxPendingPerClient+1 {
+		t.Errorf("%d entries, want %d for the busy client plus one", len(l.entries), maxPendingPerClient+1)
+	}
+	// The busy client keeps its latest sign-ins; the earliest were evicted.
+	for i, state := range states {
+		kept := l.take(state) != nil
+		if want := i >= len(states)-maxPendingPerClient; kept != want {
+			t.Errorf("sign-in %d kept = %v, want %v", i, kept, want)
+		}
+	}
+	if l.take(other) == nil {
+		t.Error("another client's sign-in was evicted")
+	}
+}
+
+func TestOAuthStartEvictsWhenPendingFull(t *testing.T) {
+	g := newFakeGitHub(t)
+	s := newOAuthTestServer(t, &fakeFetcher{}, g)
+	h := s.Handler()
+	for i := range maxPendingLogins {
+		if _, err := s.logins.add(&pendingLogin{client: "filler-" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q, c := signIn(t, h, g, url.Values{"user": {"octocat"}})
+	if c.Value != q.Get("state") {
+		t.Fatal("state cookie does not match the authorize state")
+	}
+	s.logins.mu.Lock()
+	n := len(s.logins.entries)
+	_, stored := s.logins.entries[q.Get("state")]
+	s.logins.mu.Unlock()
+	if n != maxPendingLogins || !stored {
+		t.Errorf("pending table = %d entries, new sign-in stored = %v", n, stored)
+	}
+}
+
+func TestOAuthStartRedirectsWhileJobActive(t *testing.T) {
+	g := newFakeGitHub(t)
+	f := &fakeFetcher{gate: make(chan struct{})}
+	s := newOAuthTestServer(t, f, g)
+	h := s.Handler()
+	if _, err := s.queue.Submit(signedIn(t, testToken, "user", "octocat")); err != nil {
+		t.Fatal(err)
+	}
+	rec := startSignIn(h, url.Values{"user": {"octocat"}}, "203.0.113.60")
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/u/octocat?notice=pending" {
+		t.Errorf("start during a job = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Error("start during a job set a state cookie")
+	}
+	s.logins.mu.Lock()
+	n := len(s.logins.entries)
+	s.logins.mu.Unlock()
+	if n != 0 {
+		t.Errorf("start during a job parked %d sign-ins", n)
+	}
+	close(f.gate)
+	waitIdle(t, s.queue, "octocat")
+}
+
+func TestOAuthCallbackWithoutCodeKeepsOptions(t *testing.T) {
+	g := newFakeGitHub(t)
+	s := newOAuthTestServer(t, &fakeFetcher{}, g)
+	h := s.Handler()
+	q, c := signIn(t, h, g, url.Values{"user": {"octocat"}, "tz": {"Asia/Saigon"}})
+	rec := callback(h, url.Values{"state": {q.Get("state")}}, c)
+	body := rec.Body.String()
+	if rec.Code != http.StatusBadRequest || !strings.Contains(body, "Asia/Saigon") || !strings.Contains(body, `value="octocat"`) {
+		t.Fatalf("callback without code = %d: %s", rec.Code, body)
+	}
+	if g.exchangeCount() != 0 || s.queue.Status("octocat").State != stateNone {
+		t.Error("a callback without a code exchanged or queued")
+	}
+}
+
+func TestOAuthExchangeFailureKeepsOptions(t *testing.T) {
+	for _, tc := range []struct{ name, fail, code string }{
+		{"wrong code", "", "wrong-code"},
+		{"server error", "status", testCode},
+		{"not JSON", "garbage", testCode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newFakeGitHub(t)
+			g.fail = tc.fail
+			s := newOAuthTestServer(t, &fakeFetcher{}, g)
+			h := s.Handler()
+			q, c := signIn(t, h, g, url.Values{"user": {"octocat"}, "tz": {"Asia/Saigon"}, "commits_per_repo": {"123"}})
+			query := url.Values{"code": {tc.code}, "state": {q.Get("state")}}
+			rec := callback(h, query, c)
+			body := rec.Body.String()
+			if rec.Code != http.StatusBadGateway || !strings.Contains(body, errExchange.Error()[1:]) {
+				t.Fatalf("failed exchange = %d: %s", rec.Code, body)
+			}
+			if !strings.Contains(body, `value="octocat"`) || !strings.Contains(body, "Asia/Saigon") || !strings.Contains(body, `value="123"`) {
+				t.Error("options were not kept")
+			}
+			if g.exchangeCount() != 1 || s.queue.Status("octocat").State != stateNone {
+				t.Error("a failed exchange queued a job")
+			}
+			if len(g.revokedTokens()) != 0 {
+				t.Error("a failed exchange revoked a token")
+			}
+			// The sign-in was consumed: replaying the state is refused.
+			if rec := callback(h, query, c); rec.Code != http.StatusBadRequest || g.exchangeCount() != 1 {
+				t.Errorf("replayed state = %d after %d exchanges", rec.Code, g.exchangeCount())
+			}
+		})
 	}
 }
 
@@ -489,7 +658,10 @@ func TestOAuthRevokesWhenNotQueued(t *testing.T) {
 	h := s.Handler()
 
 	q, c := signIn(t, h, g, url.Values{"user": {"octocat"}})
-	s.queue.Submit(signedIn(t, testToken, "user", "octocat")) // a job starts while the user is on GitHub
+	// A job starts while the user is on GitHub.
+	if _, err := s.queue.Submit(signedIn(t, testToken, "user", "octocat")); err != nil {
+		t.Fatal(err)
+	}
 	rec := callback(h, url.Values{"code": {testCode}, "state": {q.Get("state")}}, c)
 	if loc := rec.Header().Get("Location"); loc != "/u/octocat?notice=pending" {
 		t.Errorf("callback redirected to %q", loc)

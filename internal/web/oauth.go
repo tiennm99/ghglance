@@ -32,9 +32,15 @@ const (
 	// loginTTL is how long a started sign-in waits for GitHub's callback;
 	// GitHub's own authorization codes expire after ten minutes too.
 	loginTTL = 10 * time.Minute
-	// maxPendingLogins caps sign-ins waiting for a callback. The submission
-	// rate limit already bounds one client; this bounds them all.
+	// maxPendingLogins bounds the memory held by sign-ins waiting for a
+	// callback. Past it the earliest-expiring sign-in is evicted, never a
+	// new one refused, so a flood of starts cannot lock real visitors out:
+	// a real sign-in only has to outlive the next maxPendingLogins starts.
 	maxPendingLogins = 1000
+	// maxPendingPerClient bounds the sign-ins one client key holds at once;
+	// a further start evicts that client's earliest one, which also keeps a
+	// visitor who clicks sign-in again working.
+	maxPendingPerClient = 3
 	// oauthCookie binds the browser that started a sign-in to its state.
 	// Over https it carries the __Host- prefix, so a sibling subdomain
 	// cannot plant one; a plain-http public URL cannot use the prefix and
@@ -217,7 +223,7 @@ func (a *oauthApp) exchange(ctx context.Context, code, verifier string) (token, 
 		log.Printf("oauth: token exchange failed: %v", err)
 		return "", "", errExchange
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var body struct {
 		AccessToken string `json:"access_token"`
 		Scope       string `json:"scope"`
@@ -259,8 +265,8 @@ func (a *oauthApp) revoke(token string) {
 		log.Printf("oauth: revoke failed: %v", err)
 		return
 	}
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		log.Printf("oauth: revoke returned status %d", resp.StatusCode)
 	}
@@ -268,6 +274,7 @@ func (a *oauthApp) revoke(token string) {
 
 // pendingLogin is a submission waiting for GitHub's callback.
 type pendingLogin struct {
+	client   string // clientKey of the browser that started it
 	sub      submission
 	form     formValues
 	verifier string
@@ -286,9 +293,10 @@ func newPendingLogins() *pendingLogins {
 	return &pendingLogins{now: time.Now, entries: map[string]*pendingLogin{}}
 }
 
-var errTooManyLogins = errors.New("too many sign-ins are in progress, try again in a few minutes")
-
-// add stores p under a fresh random state and returns the state.
+// add stores p under a fresh random state and returns the state. It drops
+// expired sign-ins, then makes room by evicting p.client's earliest-expiring
+// sign-in when that client is at maxPendingPerClient, or else the
+// earliest-expiring of all when the table is at maxPendingLogins.
 func (l *pendingLogins) add(p *pendingLogin) (string, error) {
 	state, err := randomString()
 	if err != nil {
@@ -297,15 +305,29 @@ func (l *pendingLogins) add(p *pendingLogin) (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	if len(l.entries) >= maxPendingLogins {
-		for k, e := range l.entries {
-			if !now.Before(e.expires) {
-				delete(l.entries, k)
+	var oldest, oldestOwn string
+	var oldestAt, oldestOwnAt time.Time
+	own := 0
+	for k, e := range l.entries {
+		if !now.Before(e.expires) {
+			delete(l.entries, k)
+			continue
+		}
+		if oldest == "" || e.expires.Before(oldestAt) {
+			oldest, oldestAt = k, e.expires
+		}
+		if e.client == p.client {
+			own++
+			if oldestOwn == "" || e.expires.Before(oldestOwnAt) {
+				oldestOwn, oldestOwnAt = k, e.expires
 			}
 		}
 	}
-	if len(l.entries) >= maxPendingLogins {
-		return "", errTooManyLogins
+	switch {
+	case own >= maxPendingPerClient:
+		delete(l.entries, oldestOwn)
+	case len(l.entries) >= maxPendingLogins:
+		delete(l.entries, oldest)
 	}
 	p.expires = now.Add(loginTTL)
 	l.entries[state] = p
@@ -369,13 +391,9 @@ func (s *Server) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusInternalServerError, "index", pageData{Title: "ghglance", Error: capitalize(errExchange.Error()) + ".", Form: form})
 		return
 	}
-	state, err := s.logins.add(&pendingLogin{sub: sub, form: form, verifier: verifier})
+	state, err := s.logins.add(&pendingLogin{client: clientKey(r), sub: sub, form: form, verifier: verifier})
 	if err != nil {
-		status, msg := http.StatusInternalServerError, errExchange
-		if errors.Is(err, errTooManyLogins) {
-			status, msg = http.StatusServiceUnavailable, errTooManyLogins
-		}
-		s.render(w, status, "index", pageData{Title: "ghglance", Error: capitalize(msg.Error()) + ".", Form: form})
+		s.render(w, http.StatusInternalServerError, "index", pageData{Title: "ghglance", Error: capitalize(errExchange.Error()) + ".", Form: form})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
