@@ -59,36 +59,17 @@ func renderWeekday(title string, data [7]int, weekStart time.Weekday, t theme.Th
 	for i := 0; i < 7; i++ {
 		rotated[i] = (int(weekStart) + i) % 7
 	}
-	max := 0
+	maxVal := 0
 	peak := 0
 	for i := 0; i < 7; i++ {
 		v := data[rotated[i]]
-		if v > max {
-			max = v
+		if v > maxVal {
+			maxVal = v
 			peak = i
 		}
 	}
-	yMax := float64(max)
-	if yMax == 0 {
-		yMax = 1
-	}
-	ticks := niceTicks(yMax, 5)
-	if len(ticks) > 0 {
-		yMax = ticks[len(ticks)-1]
-	}
-
-	// Y axis + ticks.
-	fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>`,
-		leftAxis, topPad, leftAxis, topPad+chartH, t.Muted)
-	for _, v := range ticks {
-		y := topPad + chartH - int(float64(chartH)*v/yMax)
-		fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="end">%s</text>`,
-			leftAxis-4, y, leftAxis, y, t.Muted,
-			leftAxis-6, y+3, t.Muted, escapeXML(formatTick(v)))
-	}
+	yMax, ticks := yScale(maxVal)
+	writeYAxis(&b, axisLeft, leftAxis, topPad, chartH, ticks, yMax, t.Muted)
 
 	// X axis baseline + weekday labels.
 	fmt.Fprintf(&b, `
@@ -106,14 +87,14 @@ func renderWeekday(title string, data [7]int, weekStart time.Weekday, t theme.Th
 		x := float64(leftAxis) + (barW+float64(barGap))*float64(i)
 		y := float64(topPad+chartH) - barH
 		fill := dim
-		if i == peak && max > 0 {
+		if i == peak && maxVal > 0 {
 			fill = t.Accent
 		}
 		fmt.Fprintf(&b, `
   <rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" rx="2" fill="%s"><title>%s — %d commits</title></rect>
-  <text x="%.2f" y="%d" font-size="10" fill="%s" text-anchor="middle">%s</text>`,
+  <text x="%.2f" y="%d" font-size="%d" fill="%s" text-anchor="middle">%s</text>`,
 			x, y, barW, barH, fill, label, count,
-			x+barW/2, topPad+chartH+14, t.Muted, label)
+			x+barW/2, topPad+chartH+14, fontAxis, t.Muted, label)
 	}
 
 	b.WriteString(footer)

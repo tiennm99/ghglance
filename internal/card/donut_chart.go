@@ -50,10 +50,10 @@ func renderDonutCard(title string, stats []github.LangStat, t theme.Theme) []byt
 		y := legendY0 + i*legendDY
 		fmt.Fprintf(&b, `
   <rect x="%d" y="%d" width="%d" height="%d" fill="%s" stroke="%s" stroke-width="1"/>
-  <text x="%d" y="%d" font-size="11" fill="%s">%s %.2f%%</text>`,
+  <text x="%d" y="%d" font-size="%d" fill="%s">%s %.2f%%</text>`,
 			legendX, y-swatchSz+2, swatchSz, swatchSz,
 			colorOrAccent(s.Color, t.Accent), t.Background,
-			legendX+swatchSz+6, y, t.Text,
+			legendX+swatchSz+6, y, fontLabel, t.Text,
 			escapeXML(s.Name), pct)
 	}
 

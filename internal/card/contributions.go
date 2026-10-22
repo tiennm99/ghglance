@@ -81,18 +81,9 @@ func renderContributions(title string, days []github.DailyContribution, t theme.
 	// Y scale based on max monthly count; nice ticks for labels.
 	var maxVal int
 	for _, bk := range buckets {
-		if bk.Count > maxVal {
-			maxVal = bk.Count
-		}
+		maxVal = max(maxVal, bk.Count)
 	}
-	yMax := float64(maxVal)
-	if yMax == 0 {
-		yMax = 1
-	}
-	ticks := niceTicks(yMax, 5)
-	if len(ticks) > 0 {
-		yMax = ticks[len(ticks)-1]
-	}
+	yMax, ticks := yScale(maxVal)
 
 	// Map each bucket to an (x, y) point on the chart grid.
 	pts := make([][2]float64, len(buckets))
@@ -103,25 +94,8 @@ func renderContributions(title string, days []github.DailyContribution, t theme.
 	}
 
 	// Y axis mirrored on both sides with matching nice ticks.
-	rightX := leftPad + chartW
-	fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>`,
-		leftPad, topPad, leftPad, topPad+chartH, t.Muted,
-		rightX, topPad, rightX, topPad+chartH, t.Muted)
-	for _, v := range ticks {
-		y := topPad + chartH - int(float64(chartH)*v/yMax)
-		label := escapeXML(formatTick(v))
-		fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="end">%s</text>
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="start">%s</text>`,
-			leftPad-4, y, leftPad, y, t.Muted,
-			leftPad-6, y+3, t.Muted, label,
-			rightX, y, rightX+4, y, t.Muted,
-			rightX+6, y+3, t.Muted, label)
-	}
+	writeYAxis(&b, axisLeft, leftPad, topPad, chartH, ticks, yMax, t.Muted)
+	writeYAxis(&b, axisRight, leftPad+chartW, topPad, chartH, ticks, yMax, t.Muted)
 
 	// X axis baseline + month labels. Stride is chosen so roughly xLabelTarget
 	// labels span the full width regardless of bucket count — keeps the axis
@@ -130,16 +104,16 @@ func renderContributions(title string, days []github.DailyContribution, t theme.
   <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>`,
 		leftPad, topPad+chartH, leftPad+chartW, topPad+chartH, t.Muted)
 	for i, bk := range buckets {
-		if !xAxisLabelVisible(i, len(buckets)) {
+		if !xAxisLabelVisible(i, len(buckets), chartW) {
 			continue
 		}
 		x := int(pts[i][0])
 		label := fmt.Sprintf("%02d/%02d", int(bk.Month), bk.Year%100)
 		fmt.Fprintf(&b, `
   <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="middle">%s</text>`,
+  <text x="%d" y="%d" font-size="%d" fill="%s" text-anchor="middle">%s</text>`,
 			x, topPad+chartH, x, topPad+chartH+4, t.Muted,
-			x, topPad+chartH+16, t.Muted, label)
+			x, topPad+chartH+16, fontAxis, t.Muted, label)
 	}
 
 	// Smooth filled area using Catmull-Rom → cubic Bezier segments.
@@ -152,19 +126,24 @@ func renderContributions(title string, days []github.DailyContribution, t theme.
 
 	// Axis caption — documents the tick label format.
 	fmt.Fprintf(&b, `
-  <text x="%d" y="%d" font-size="11" fill="%s" text-anchor="middle">mm/yy</text>`,
-		leftPad+chartW/2, topPad+chartH+34, t.Muted)
+  <text x="%d" y="%d" font-size="%d" fill="%s" text-anchor="middle">mm/yy</text>`,
+		leftPad+chartW/2, topPad+chartH+34, fontLabel, t.Muted)
 
 	b.WriteString(footer)
 	return []byte(b.String())
 }
 
-// xAxisLabelVisible returns true when the bucket at position i should get a
-// printed month label. Targets ~xLabelTarget labels evenly distributed across
-// the axis, always pinning the first and last so the span is obvious.
+// xAxisLabelVisible returns true when the bucket at position i of n, on an
+// axis chartW px wide, should get a printed month label. Targets
+// ~xLabelTarget labels evenly distributed across the axis, always pinning
+// the first and last so the span is obvious.
 const xLabelTarget = 6
 
-func xAxisLabelVisible(i, n int) bool {
+// minMonthLabelPitch is the closest two "mm/yy" labels may sit, center to
+// center: each label is about 30 px wide at the axis font.
+const minMonthLabelPitch = 34
+
+func xAxisLabelVisible(i, n, chartW int) bool {
 	if n <= xLabelTarget {
 		return true // few enough points — label all of them
 	}
@@ -172,14 +151,11 @@ func xAxisLabelVisible(i, n int) bool {
 		return true
 	}
 	stride := (n - 1) / (xLabelTarget - 1)
-	if stride < 1 {
-		stride = 1
-	}
-	// Skip labels that are too close to the pinned last point.
-	if n-1-i < stride/2 {
+	if i%stride != 0 {
 		return false
 	}
-	return i%stride == 0
+	// Skip a label that would overlap the pinned last label.
+	return (n-1-i)*chartW >= minMonthLabelPitch*(n-1)
 }
 
 // aggregateByMonth bins the daily series into consecutive month buckets

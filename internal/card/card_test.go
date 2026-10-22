@@ -1,6 +1,7 @@
 package card
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -95,6 +96,7 @@ func TestRenderAll(t *testing.T) {
 		"productive-weekday-all-time.svg",
 		"contributions-all-time.svg",
 		"contributions-by-year.svg",
+		"records.svg",
 	}
 	for _, name := range want {
 		data, err := os.ReadFile(filepath.Join(dir, "dracula", name))
@@ -442,4 +444,209 @@ func adversarialProfile() *github.Profile {
 			github.DailyContribution{Date: yearStart.AddDate(0, 0, i), Count: i % 23})
 	}
 	return p
+}
+
+// TestNiceTicksSmallMaxUsesWholeCounts covers the near-empty charts: every
+// card forces an all-zero series to max 1, and small counts must still get
+// whole-number labels that fit the 4-character axis gutter.
+func TestNiceTicksSmallMaxUsesWholeCounts(t *testing.T) {
+	cases := map[float64][]float64{
+		1: {0, 1},
+		2: {0, 1, 2},
+		3: {0, 1, 2, 3},
+	}
+	for m, want := range cases {
+		got := niceTicks(m, 5)
+		if len(got) != len(want) {
+			t.Errorf("niceTicks(%v)=%v want %v", m, got, want)
+			continue
+		}
+		for i, v := range got {
+			if v != want[i] || v != math.Trunc(v) {
+				t.Errorf("niceTicks(%v)=%v want %v", m, got, want)
+				break
+			}
+			if label := formatTick(v); len(label) > 4 {
+				t.Errorf("niceTicks(%v): label %q longer than 4 characters", m, label)
+			}
+		}
+	}
+}
+
+// TestNiceTicksHaveNoFloatDrift checks a spread of maxima for labels that
+// outgrow the axis gutter, such as "0.6000000000000001".
+func TestNiceTicksHaveNoFloatDrift(t *testing.T) {
+	for m := 1; m <= 5000; m += 7 {
+		for _, v := range niceTicks(float64(m), 5) {
+			if label := formatTick(v); len(label) > 4 {
+				t.Errorf("niceTicks(%d): label %q longer than 4 characters", m, label)
+			}
+		}
+	}
+}
+
+// TestHeatmapRampDistinctForEveryTheme guards the heatmap against palettes
+// whose colors the blender cannot parse (such as 8-digit "#rrggbbaa"), which
+// collapse all five intensity levels into a single color.
+func TestHeatmapRampDistinctForEveryTheme(t *testing.T) {
+	for _, id := range theme.IDs() {
+		th, _ := theme.Lookup(id)
+		ramp := heatmapRamp(th)
+		seen := map[string]int{}
+		for i, c := range ramp {
+			key := strings.ToLower(c)
+			if j, dup := seen[key]; dup {
+				t.Errorf("%s: heatmap levels %d and %d share color %s (ramp %v)", id, j, i, c, ramp)
+			}
+			seen[key] = i
+		}
+	}
+}
+
+func TestMixHexCarriesAlpha(t *testing.T) {
+	cases := []struct {
+		a, b  string
+		ratio float64
+		want  string
+	}{
+		{"#000000", "#ffffff", 0.5, "#7f7f7f"},
+		{"#00000000", "#006AFF", 0, "#00000000"},
+		{"#00000000", "#006AFF", 0.5, "#006aff80"},
+		{"#00000000", "#006AFF", 1, "#006affff"},
+		{"#31353a", "#19f9d899", 1, "#19f9d899"},
+		{"#31353a", "#19f9d899", 0, "#31353aff"},
+		{"not-a-color", "#123456", 0.5, "#123456"},
+	}
+	for _, c := range cases {
+		if got := mixHex(c.a, c.b, c.ratio); got != c.want {
+			t.Errorf("mixHex(%q, %q, %v)=%q want %q", c.a, c.b, c.ratio, got, c.want)
+		}
+	}
+}
+
+// TestBucketForScalesToBusiestDay checks that the busiest day always reaches
+// the full accent, any active day is at least bucket 1, and light
+// contributors are not painted at full intensity.
+func TestBucketForScalesToBusiestDay(t *testing.T) {
+	cases := []struct {
+		count, max, want int
+	}{
+		{0, 0, 0},
+		{0, 1, 0},
+		{1, 1, 4},
+		{1, 2, 2},
+		{2, 2, 4},
+		{1, 3, 2},
+		{2, 3, 3},
+		{3, 3, 4},
+		{1, 4, 1},
+		{2, 4, 2},
+		{3, 4, 3},
+		{4, 4, 4},
+		{1, 8, 1},
+		{2, 8, 1},
+		{3, 8, 2},
+		{8, 8, 4},
+		{1, 100, 1},
+		{25, 100, 1},
+		{26, 100, 2},
+		{50, 100, 2},
+		{75, 100, 3},
+		{76, 100, 4},
+		{100, 100, 4},
+	}
+	for _, c := range cases {
+		if got := bucketFor(c.count, c.max); got != c.want {
+			t.Errorf("bucketFor(%d, %d)=%d want %d", c.count, c.max, got, c.want)
+		}
+	}
+}
+
+// TestMonthLabelsDoNotOverlap walks every month count the contributions
+// cards can plot and checks consecutive printed labels never overlap: each
+// "mm/yy" label is about 30 px wide, and the pinned last label keeps at
+// least minMonthLabelPitch from the one before it.
+func TestMonthLabelsDoNotOverlap(t *testing.T) {
+	const (
+		chartW     = 284 // contributions card: 340 − 28 − 28
+		labelWidth = 30
+	)
+	for n := xLabelTarget + 1; n <= 300; n++ {
+		prev := -1.0
+		for i := 0; i < n; i++ {
+			if !xAxisLabelVisible(i, n, chartW) {
+				continue
+			}
+			x := float64(chartW) * float64(i) / float64(n-1)
+			minGap := float64(labelWidth)
+			if i == n-1 {
+				minGap = minMonthLabelPitch
+			}
+			if prev >= 0 && x-prev < minGap {
+				t.Errorf("n=%d: label %d sits %.1f px from the previous one", n, i, x-prev)
+			}
+			prev = x
+		}
+		if !xAxisLabelVisible(0, n, chartW) || !xAxisLabelVisible(n-1, n, chartW) {
+			t.Errorf("n=%d: first and last month must always be labelled", n)
+		}
+	}
+}
+
+// TestYearLabelsDoNotOverlap covers every realistic history length (GitHub
+// launched in 2008) using the contributions-by-year bar geometry.
+func TestYearLabelsDoNotOverlap(t *testing.T) {
+	const (
+		chartW = 290 // 340 − 35 − 15
+		barGap = 2
+	)
+	for n := 1; n <= 25; n++ {
+		barW := float64(chartW-barGap*(n-1)) / float64(n)
+		pitch := barW + barGap
+		prev := -1.0
+		for i := 0; i < n; i++ {
+			if !yearLabelVisible(i, n, pitch) {
+				continue
+			}
+			x := pitch * float64(i)
+			if prev >= 0 && x-prev < minYearLabelPitch {
+				t.Errorf("n=%d: year label %d sits %.1f px from the previous one", n, i, x-prev)
+			}
+			prev = x
+		}
+		if !yearLabelVisible(n-1, n, pitch) {
+			t.Errorf("n=%d: last year must always be labelled", n)
+		}
+	}
+}
+
+// TestTopStarredReposListsPrivateRepos pins the current behavior: with
+// include_private on, a starred private repo appears on the card like any
+// other owned repo.
+func TestTopStarredReposListsPrivateRepos(t *testing.T) {
+	th, _ := theme.Lookup("dracula")
+	p := &github.Profile{TopRepos: []github.RepoInfo{
+		{Owner: "u", Name: "public-one", Stars: 9},
+		{Owner: "u", Name: "secret-one", Stars: 5, IsPrivate: true},
+	}}
+	data, err := topStarredReposCard{}.SVG(p, th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"public-one", "secret-one"} {
+		if !strings.Contains(string(data), ">"+name+"<") {
+			t.Errorf("expected %q on the card", name)
+		}
+	}
+}
+
+func TestTopStarredReposEmptyState(t *testing.T) {
+	th, _ := theme.Lookup("dracula")
+	data, err := topStarredReposCard{}.SVG(&github.Profile{}, th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "No starred repos yet.") {
+		t.Errorf("empty card should say there are no starred repos; got:\n%s", data)
+	}
 }

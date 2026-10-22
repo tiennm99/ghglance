@@ -42,14 +42,14 @@ func (streakCard) SVG(p *github.Profile, t theme.Theme) ([]byte, error) {
 	for i, c := range cols {
 		cx := colW*i + colW/2
 		fmt.Fprintf(&b, `
-  <text x="%d" y="%d" font-size="28" font-weight="700" fill="%s" text-anchor="middle">%s</text>
-  <text x="%d" y="%d" font-size="12" fill="%s" text-anchor="middle">%s</text>`,
-			cx, 95, t.Accent, escapeXML(c.value),
-			cx, 120, t.Text, escapeXML(c.label))
+  <text x="%d" y="%d" font-size="%d" font-weight="700" fill="%s" text-anchor="middle">%s</text>
+  <text x="%d" y="%d" font-size="%d" fill="%s" text-anchor="middle">%s</text>`,
+			cx, 95, fontBigNum, t.Accent, escapeXML(c.value),
+			cx, 120, fontBody, t.Text, escapeXML(c.label))
 		if c.detail != "" {
 			fmt.Fprintf(&b, `
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="middle">%s</text>`,
-				cx, 140, t.Muted, escapeXML(c.detail))
+  <text x="%d" y="%d" font-size="%d" fill="%s" text-anchor="middle">%s</text>`,
+				cx, 140, fontAxis, t.Muted, escapeXML(c.detail))
 		}
 	}
 

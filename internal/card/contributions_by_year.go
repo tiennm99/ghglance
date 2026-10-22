@@ -47,27 +47,8 @@ func (contributionsByYearCard) SVG(p *github.Profile, t theme.Theme) ([]byte, er
 			peakIdx = i
 		}
 	}
-	yMax := float64(maxVal)
-	if yMax == 0 {
-		yMax = 1
-	}
-	ticks := niceTicks(yMax, 5)
-	if len(ticks) > 0 {
-		yMax = ticks[len(ticks)-1]
-	}
-
-	// Y axis + ticks.
-	fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>`,
-		leftAxis, topPad, leftAxis, topPad+chartH, t.Muted)
-	for _, v := range ticks {
-		y := topPad + chartH - int(float64(chartH)*v/yMax)
-		fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="end">%s</text>`,
-			leftAxis-4, y, leftAxis, y, t.Muted,
-			leftAxis-6, y+3, t.Muted, escapeXML(formatTick(v)))
-	}
+	yMax, ticks := yScale(maxVal)
+	writeYAxis(&b, axisLeft, leftAxis, topPad, chartH, ticks, yMax, t.Muted)
 
 	// X axis baseline.
 	fmt.Fprintf(&b, `
@@ -77,7 +58,6 @@ func (contributionsByYearCard) SVG(p *github.Profile, t theme.Theme) ([]byte, er
 	// Bars + year labels. Peak year uses Accent; others use a muted Accent
 	// mix so the eye snaps to the year that matters most.
 	dim := mixHex(t.Background, t.Accent, 0.55)
-	labelStride := yearLabelStride(len(buckets))
 	for i, bk := range buckets {
 		barH := float64(chartH) * float64(bk.Count) / yMax
 		x := float64(leftAxis) + (barW+float64(barGap))*float64(i)
@@ -90,11 +70,11 @@ func (contributionsByYearCard) SVG(p *github.Profile, t theme.Theme) ([]byte, er
   <rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" rx="2" fill="%s"><title>%d — %d commits</title></rect>`,
 			x, y, barW, barH, fill, bk.Year, bk.Count)
 
-		if i%labelStride == 0 || i == len(buckets)-1 {
+		if yearLabelVisible(i, len(buckets), barW+float64(barGap)) {
 			cx := x + barW/2
 			fmt.Fprintf(&b, `
-  <text x="%.2f" y="%d" font-size="10" fill="%s" text-anchor="middle">%d</text>`,
-				cx, topPad+chartH+14, t.Muted, bk.Year)
+  <text x="%.2f" y="%d" font-size="%d" fill="%s" text-anchor="middle">%d</text>`,
+				cx, topPad+chartH+14, fontAxis, t.Muted, bk.Year)
 		}
 	}
 
@@ -135,6 +115,24 @@ func aggregateByYear(days []github.DailyContribution) []yearBucket {
 	// Defensive sort in case caller ever passes an unordered slice.
 	sort.Slice(out, func(i, j int) bool { return out[i].Year < out[j].Year })
 	return out
+}
+
+// minYearLabelPitch is the closest two year labels may sit, center to
+// center: a four-digit year at the axis font is about 24 px wide.
+const minYearLabelPitch = 28
+
+// yearLabelVisible reports whether bar i of n, spaced pitch px apart, gets a
+// year label. Labels follow yearLabelStride and the last year is always
+// labelled; a stride label that would sit closer than minYearLabelPitch to
+// that pinned last label is dropped so the two never overlap.
+func yearLabelVisible(i, n int, pitch float64) bool {
+	if i == n-1 {
+		return true
+	}
+	if i%yearLabelStride(n) != 0 {
+		return false
+	}
+	return float64(n-1-i)*pitch >= minYearLabelPitch
 }
 
 // yearLabelStride picks how many years between printed x-axis labels so the
