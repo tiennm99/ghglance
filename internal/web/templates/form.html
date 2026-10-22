@@ -14,7 +14,7 @@
       <div class="field">
         <label for="tz">Timezone</label>
         <input id="tz" name="tz" type="text" maxlength="64" value="{{.Form.TZ}}"
-          {{if not .Meta}}data-autotz{{end}} aria-describedby="tz-hint" spellcheck="false">
+          {{if and (not .Meta) (not .Form.Submitted)}}data-autotz{{end}} aria-describedby="tz-hint" spellcheck="false">
         <p class="hint" id="tz-hint">IANA name such as Asia/Saigon. Buckets commit hours on the productive-time cards.</p>
       </div>
 
@@ -67,15 +67,18 @@
       <input id="token" name="token" type="password" autocomplete="off" spellcheck="false"
         maxlength="255" aria-describedby="token-hint">
       <p class="token-create">
-        <a class="button" href="https://github.com/settings/tokens/new?scopes=repo,read:user&amp;description=ghglance"
-          target="_blank" rel="noopener noreferrer">Create a token on GitHub</a>
-        <span class="hint">Opens a classic token with the <code>repo</code> and <code>read:user</code> scopes already ticked. Pick a short expiration, generate it, and paste it here.</span>
+        <a class="button" href="https://github.com/settings/tokens/new?scopes=read:user&amp;description=ghglance"
+          target="_blank" rel="noopener noreferrer" data-token-link>Create a token on GitHub</a>
+        <span class="hint" data-token-scopes aria-live="polite">Opens a classic token with the <code>read:user</code> scope already ticked, which covers public data.
+          For private repos of your own account, also tick <code>repo</code> there.
+          Pick a short expiration, generate it, and paste it here.</span>
       </p>
       <p class="hint" id="token-hint">
         Used for this one generation only: never stored, never logged, and not revoked, so it stays yours to delete on GitHub.
         A token here is used instead of signing in, whichever button you press.
         With a token for the username's own account, private repos count when ticked and the regenerate wait is skipped;
-        a token for another account renders public data only and is refused if it can read private repos.
+        a token of your own that can read private repos is refused unless private repos are ticked.
+        A token for another account renders public data only and is refused if it can read private repos.
         <strong>The resulting cards are visible on this site to anyone with the page link.</strong>
       </p>
     </div>
