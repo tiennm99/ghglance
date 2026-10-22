@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tiennm99/ghglance/internal/card"
@@ -81,6 +82,10 @@ type Server struct {
 	csp     string
 	oauth   *oauthApp
 	logins  *pendingLogins
+	// callbacks tracks sign-in callbacks still in their handler. One can
+	// hold a fresh token past the HTTP drain, so Close waits for it to be
+	// queued or revoked.
+	callbacks sync.WaitGroup
 }
 
 // New opens the data directory and starts the job workers.
@@ -120,9 +125,11 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Close stops the workers and releases the data directory.
+// Close stops the workers, waits for sign-in callbacks still holding a
+// token to queue or revoke it, and releases the data directory.
 func (s *Server) Close() {
 	s.queue.Stop()
+	s.callbacks.Wait()
 	if err := s.store.Close(); err != nil {
 		log.Printf("close data directory: %v", err)
 	}
@@ -133,6 +140,10 @@ func (s *Server) Close() {
 // call bounded by oauthTimeout, so the container's stop grace period
 // (stop_grace_period in compose.yml) must cover at least shutdownTimeout
 // plus two oauthTimeout windows (dropped queued jobs, then running ones).
+// A sign-in callback that outlasts the drain is covered by the same budget:
+// its token exchange, bounded by oauthTimeout, ends inside the first window
+// after the drain, the stopped queue refuses its job at once, and its
+// revoke ends inside the second.
 const shutdownTimeout = 15 * time.Second
 
 // Run serves until ctx is cancelled, then drains in-flight requests and

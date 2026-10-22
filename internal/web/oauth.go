@@ -429,6 +429,8 @@ func (s *Server) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 // enforces the ownership, privacy and cooldown rules once it knows whose
 // token it holds. The token is revoked when the job ends.
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	s.callbacks.Add(1)
+	defer s.callbacks.Done()
 	w.Header().Set("Cache-Control", "no-store")
 	http.SetCookie(w, &http.Cookie{
 		Name: s.oauth.cookieName, Value: "", Path: "/", MaxAge: -1,

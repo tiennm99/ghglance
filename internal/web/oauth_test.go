@@ -407,6 +407,25 @@ func TestOAuthStateExpires(t *testing.T) {
 	}
 }
 
+func TestCloseRevokesTokenOfCallbackInFlight(t *testing.T) {
+	g := newFakeGitHub(t)
+	f := &fakeFetcher{tokenStall: make(chan struct{})}
+	s := newOAuthTestServer(t, f, g)
+	h := s.Handler()
+	q, c := signIn(t, h, g, url.Values{"user": {"octocat"}})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		callback(h, url.Values{"code": {testCode}, "state": {q.Get("state")}}, c)
+	}()
+	<-f.tokenStall // the callback holds the token and waits on GitHub
+	s.Close()
+	if got := g.revokedTokens(); len(got) != 1 || got[0] != oauthToken {
+		t.Errorf("revoked = %q after Close, want the in-flight sign-in token", got)
+	}
+	<-done
+}
+
 func TestPendingLoginsEvictEarliestWhenFull(t *testing.T) {
 	l := newPendingLogins()
 	now := time.Now()

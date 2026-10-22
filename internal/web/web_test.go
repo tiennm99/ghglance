@@ -47,6 +47,9 @@ type fakeFetcher struct {
 	stall    bool
 	err      error
 	tokenErr error
+	// tokenStall, when set, makes TokenInfo signal it and then block until
+	// its context ends, like a GitHub that stops answering.
+	tokenStall chan struct{}
 }
 
 func (f *fakeFetcher) Fetch(ctx context.Context, token, login string, cfg github.CollectConfig) (*github.Profile, error) {
@@ -71,7 +74,12 @@ func (f *fakeFetcher) Fetch(ctx context.Context, token, login string, cfg github
 	return &github.Profile{Login: login, Name: "Test User", WeekStart: cfg.WeekStart}, nil
 }
 
-func (f *fakeFetcher) TokenInfo(_ context.Context, token string) (github.TokenInfo, error) {
+func (f *fakeFetcher) TokenInfo(ctx context.Context, token string) (github.TokenInfo, error) {
+	if f.tokenStall != nil {
+		f.tokenStall <- struct{}{}
+		<-ctx.Done()
+		return github.TokenInfo{}, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.tokenErr != nil {

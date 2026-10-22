@@ -6,8 +6,9 @@ services:
     command: ["-serve", ":8080", "-data-dir", "/data", "-retention", "24h"]
     restart: unless-stopped
     # On stop the server drains requests for up to 15s, then revokes the
-    # sign-in tokens of dropped and running jobs, each revoke call allowed
-    # 15s. Docker's default 10s grace would SIGKILL it before revoking.
+    # sign-in tokens of dropped and running jobs and of sign-ins still in
+    # their callback, each revoke call allowed 15s. Docker's default 10s
+    # grace would SIGKILL it before revoking.
     stop_grace_period: 50s
     # Tells Coolify's proxy which container port to route to, even when the
     # domain is entered without a ":8080" suffix.
