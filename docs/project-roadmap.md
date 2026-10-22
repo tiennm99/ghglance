@@ -42,7 +42,7 @@ Catch work in org repos where the user is a collaborator rather than owner.
 | Limitation | Reason |
 | --- | --- |
 | Markdown/prose excluded from byte counts | Linguist's default — we defer to it |
-| No real-time API / server mode | Scheduled batch renderer, not a service |
+| No hosted service, no card-by-URL or embeddable image API | Cards are committed by the Action or written by the CLI; the optional `-serve` web UI is for viewing only and inlines cards as `data:` URIs, so no route serves a card to link or embed |
 | No WakaTime integration | Other tools already cover this (`athul/waka-readme`, `anmol098/waka-readme-stats`) |
 | No 7×24 heatmap variant of productive time | 24-hour bar chart matches the reference project |
 | Hard 340 px card width | Matches github-profile-summary-cards; customising would cascade through every chart's geometry |

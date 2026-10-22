@@ -53,7 +53,9 @@ FetchContributionsAllTime(ctx, profile, opts)
   │          TotalCommitsAllTime
   │
   ▼
-FetchProductive(ctx, profile, SeedRepos[:cfg.TopRepos], loc, commitsPerRepo)  // 0 = no cap
+FetchProductive(ctx, profile, seeds, loc, commitsPerRepo)  // commitsPerRepo 0 = no cap
+  │  seeds = SeedRepos, or with -top-repos N (cfg.TopRepos; 0 = no cap)
+  │    the N most recently active seed repos
   │  commitHistoryQuery × (#seeds × pages)
   │  per commit: t = committedDate in loc
   │              ProductiveAllTime[t.Hour]++
@@ -179,8 +181,9 @@ job ends (sign-in token only) ─► DELETE api.github.com/applications/{client_
 - **Path safety.** Logins are checked against GitHub's rule (alphanumerics
   and single hyphens, 1–39 chars) and themes and card names against the
   registered lists before any path is built; reads go through `os.Root`.
-- **Jobs.** In-process queue, at most one queued or running job per user,
-  `-workers` concurrent, `-timeout` each, capacity 64. `SIGTERM` stops the
+- **Jobs.** In-process queue, at most one queued or running job per target
+  user and at most 3 queued or running jobs per submitter, `-workers`
+  concurrent, `-timeout` each, capacity 64. `SIGTERM` stops the
   HTTP server, cancels running jobs and drops queued ones; nothing is
   published mid-render.
 - **Tokens.** The server has no GitHub token of its own: every job runs on

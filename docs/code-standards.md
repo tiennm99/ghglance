@@ -20,7 +20,7 @@ Applied in order: **YAGNI → KISS → DRY**.
 
 - `main.go` at repo root — the CLI wrapper only.
 - All reusable code under `internal/` so it can't accidentally become an API.
-- Each package owns one concern: `github` = network, `card` = render, `theme` = palette data.
+- Each package owns one concern: `github` = network, `card` = render, `theme` = palette data, `web` = optional HTTP UI (sign-in, job queue, card store).
 
 ### Error handling
 
@@ -65,8 +65,9 @@ Never write comments that describe what well-named code does (`// increment coun
 
 ## Testing
 
-- Unit tests in the same package, no mocking of http.Client — we test rendering and pure helpers.
-- Network tests are omitted; integration verification is manual (`./ghglance -token ...`).
+- Unit tests live in the same package. No test calls the real GitHub API.
+- `internal/card`, `internal/theme` and the pure helpers in `internal/github` are tested directly; integration verification of the github fetchers against GitHub is manual (`./ghglance -token ...`).
+- `internal/web` is tested over HTTP with `net/http/httptest`: handlers through recorders, a fake `Fetcher` in place of GitHub, and a fake GitHub OAuth server for sign-in.
 - `go vet ./...` clean before every commit.
 
 ## Commit conventions
