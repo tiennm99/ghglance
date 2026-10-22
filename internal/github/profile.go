@@ -132,6 +132,12 @@ func (c *Client) FetchProfile(ctx context.Context, login string, opts FetchOptio
 		u := resp.User
 
 		if page == 0 {
+			// GitHub resolves the login case-insensitively; adopt its
+			// canonical casing so owner comparisons, the card name and the
+			// later contribution queries all match the account exactly.
+			if u.Login != "" {
+				p.Login = u.Login
+			}
 			p.ID = u.ID
 			p.Name = u.Name
 			p.Bio = u.Bio
@@ -170,7 +176,7 @@ func (c *Client) FetchProfile(ctx context.Context, login string, opts FetchOptio
 		}
 
 		for _, r := range u.Repositories.Nodes {
-			if !ownedByUser(r, login, opts) {
+			if !ownedByUser(r, p.Login, opts) {
 				continue
 			}
 			if r.IsFork && !opts.IncludeForks {
@@ -183,7 +189,7 @@ func (c *Client) FetchProfile(ctx context.Context, login string, opts FetchOptio
 			p.TotalStars += r.StargazerCount
 			p.TotalForks += r.ForkCount
 
-			info := r.toRepoInfo(login)
+			info := r.toRepoInfo(p.Login)
 			if r.PrimaryLanguage != nil {
 				reposPerLang[r.PrimaryLanguage.Name]++
 				if _, ok := langColor[r.PrimaryLanguage.Name]; !ok {

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +20,11 @@ const endpoint = "https://api.github.com/graphql"
 type Client struct {
 	token string
 	http  *http.Client
+	// warnf receives non-fatal notices (rate-limit sleeps, API ceilings).
+	// Nil discards them; Collect points it at CollectConfig.Warnf.
+	warnf func(format string, args ...any)
+	// sleep waits out a rate limit; nil means a real, ctx-aware wait.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // NewClient returns a client authenticated with the given PAT. An empty token
@@ -29,6 +33,13 @@ func NewClient(token string) *Client {
 	return &Client{
 		token: token,
 		http:  &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// warn reports a non-fatal notice through warnf, if one is set.
+func (c *Client) warn(format string, args ...any) {
+	if c.warnf != nil {
+		c.warnf(format, args...)
 	}
 }
 
@@ -55,8 +66,10 @@ const maxRateLimitSleep = 5 * time.Minute
 
 // query runs a GraphQL query and unmarshals the `data` field into out.
 // Respects ctx deadlines so pagination loops can abort early when the
-// caller's overall budget expires. On a primary-rate-limit 403, honors
-// Retry-After / X-RateLimit-Reset once before retrying.
+// caller's overall budget expires. On a rate limit (HTTP 429, a 403 primary
+// or secondary limit, or a GraphQL RATE_LIMITED error) it waits once for
+// Retry-After / X-RateLimit-Reset and retries, unless that wait exceeds
+// maxRateLimitSleep, in which case it fails at once.
 func (c *Client) query(ctx context.Context, q string, vars map[string]any, out any) error {
 	_, err := c.queryHeader(ctx, q, vars, out)
 	return err
@@ -86,21 +99,14 @@ func (c *Client) queryHeader(ctx context.Context, q string, vars map[string]any,
 		}
 
 		raw, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close() // fully read already; a close error loses nothing
 		if err != nil {
 			return nil, fmt.Errorf("read body: %w", err)
 		}
 
-		if rateLimited(resp) && attempt == 0 {
-			wait := rateLimitWait(resp)
-			if wait > maxRateLimitSleep {
-				return nil, fmt.Errorf("http %d: rate limit resets in %s (>%s max wait)", resp.StatusCode, wait, maxRateLimitSleep)
-			}
-			fmt.Fprintf(os.Stderr, "warn: rate-limited, sleeping %s before retry\n", wait.Round(time.Second))
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				return nil, ctx.Err()
+		if rateLimited(resp, raw) && attempt == 0 {
+			if err := c.waitRateLimit(ctx, resp, fmt.Sprintf("http %d", resp.StatusCode)); err != nil {
+				return nil, err
 			}
 			continue
 		}
@@ -113,6 +119,12 @@ func (c *Client) queryHeader(ctx context.Context, q string, vars map[string]any,
 			return nil, fmt.Errorf("decode body: %w", err)
 		}
 		if len(r.Errors) > 0 {
+			if graphQLRateLimited(r.Errors) && attempt == 0 {
+				if err := c.waitRateLimit(ctx, resp, "graphql"); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			msgs := make([]string, 0, len(r.Errors))
 			for _, e := range r.Errors {
 				msgs = append(msgs, e.Message)
@@ -129,14 +141,56 @@ func (c *Client) queryHeader(ctx context.Context, q string, vars map[string]any,
 	return nil, fmt.Errorf("http: exceeded retry attempts")
 }
 
-// rateLimited returns true when the response indicates a GitHub primary or
-// secondary rate-limit hit (429, or 403 with remaining=0).
-func rateLimited(resp *http.Response) bool {
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return true
+// waitRateLimit sleeps until the rate limit signalled by resp should have
+// lifted, or fails at once when that is further away than maxRateLimitSleep.
+// source prefixes the error so the message says which signal tripped.
+func (c *Client) waitRateLimit(ctx context.Context, resp *http.Response, source string) error {
+	wait := rateLimitWait(resp)
+	if wait > maxRateLimitSleep {
+		return fmt.Errorf("%s: rate limit resets in %s (>%s max wait)", source, wait.Round(time.Second), maxRateLimitSleep)
 	}
-	if resp.StatusCode == http.StatusForbidden {
-		if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining == "0" {
+	c.warn("rate-limited, sleeping %s before retry", wait.Round(time.Second))
+	sleep := c.sleep
+	if sleep == nil {
+		sleep = sleepCtx
+	}
+	return sleep(ctx, wait)
+}
+
+// sleepCtx waits for d or until ctx ends, whichever comes first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// rateLimited reports whether an HTTP response is a GitHub rate-limit hit:
+// a 429, a primary-limit 403 (X-RateLimit-Remaining is 0), or a
+// secondary-limit 403, which keeps Remaining above 0 but carries Retry-After
+// or says "secondary rate limit" in its body.
+func rateLimited(resp *http.Response, body []byte) bool {
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		return true
+	case http.StatusForbidden:
+		return resp.Header.Get("X-RateLimit-Remaining") == "0" ||
+			resp.Header.Get("Retry-After") != "" ||
+			bytes.Contains(bytes.ToLower(body), []byte("secondary rate limit"))
+	}
+	return false
+}
+
+// graphQLRateLimited reports whether a GraphQL error list includes GitHub's
+// RATE_LIMITED type, which the API returns inside an HTTP 200 once the point
+// budget runs out.
+func graphQLRateLimited(errs []gqlError) bool {
+	for _, e := range errs {
+		if e.Type == "RATE_LIMITED" {
 			return true
 		}
 	}
@@ -145,29 +199,24 @@ func rateLimited(resp *http.Response) bool {
 
 // rateLimitWait derives a sleep duration from response headers: Retry-After
 // (secondary rate limits) takes precedence over X-RateLimit-Reset (primary).
-// Returns a 60s floor if neither header is usable, capped at maxRateLimitSleep.
+// Returns a 60s floor if neither header is usable. The result is not capped,
+// so the caller can refuse a reset that is too far away instead of sleeping
+// part of the way and retrying while still limited.
 func rateLimitWait(resp *http.Response) time.Duration {
 	if v := resp.Header.Get("Retry-After"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			return clampDuration(time.Duration(secs) * time.Second)
+			return time.Duration(secs) * time.Second
 		}
 	}
 	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
 		if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
 			wait := time.Until(time.Unix(ts, 0))
 			if wait > 0 {
-				return clampDuration(wait + time.Second) // +1s buffer
+				return wait + time.Second // +1s buffer
 			}
 		}
 	}
 	return 60 * time.Second
-}
-
-func clampDuration(d time.Duration) time.Duration {
-	if d > maxRateLimitSleep {
-		return maxRateLimitSleep
-	}
-	return d
 }
 
 // truncate shortens b to at most n bytes, backing up to the last valid UTF-8

@@ -62,6 +62,13 @@ func (c *Client) FetchProductive(ctx context.Context, p *Profile, repos []RepoIn
 	allTimeLang := map[string]int64{}
 	langColor := map[string]string{}
 
+	// Build the language aggregates on every exit path, so an error part-way
+	// through leaves them as partially filled as the hour and weekday ones.
+	defer func() {
+		p.CommitsByLanguage = sortLangStats(lastYearLang, langColor)
+		p.CommitsByLanguageAllTime = sortLangStats(allTimeLang, langColor)
+	}()
+
 	for _, repo := range repos {
 		// Precompute the repo's total language bytes once; attributeCommit
 		// reuses it for every commit instead of re-summing ~10 edges per
@@ -73,10 +80,7 @@ func (c *Client) FetchProductive(ctx context.Context, p *Profile, repos []RepoIn
 
 		var cursor *string
 		seen := 0
-		for {
-			if reachedCommitCap(seen, maxPerRepo) {
-				break
-			}
+		for !reachedCommitCap(seen, maxPerRepo) {
 			owner := repo.Owner
 			if owner == "" {
 				owner = p.Login
@@ -122,9 +126,6 @@ func (c *Client) FetchProductive(ctx context.Context, p *Profile, repos []RepoIn
 			cursor = &end
 		}
 	}
-
-	p.CommitsByLanguage = sortLangStats(lastYearLang, langColor)
-	p.CommitsByLanguageAllTime = sortLangStats(allTimeLang, langColor)
 	return nil
 }
 
