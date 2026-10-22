@@ -15,7 +15,8 @@ type CollectConfig struct {
 	Location *time.Location
 	// WeekStart is the first heatmap row and weekday bar.
 	WeekStart time.Weekday
-	// TopRepos caps the seed repos probed for commit history (0 = unlimited).
+	// TopRepos caps the seed repos probed for commit history, keeping the
+	// most recently active ones (0 = unlimited).
 	TopRepos int
 	// CommitsPerRepo caps commits sampled per seed repo (0 = every commit).
 	CommitsPerRepo int
@@ -31,12 +32,17 @@ type CollectConfig struct {
 // FetchContributionsAllTime (which yields the seed repos), then
 // FetchProductive over those seeds. Only the profile fetch is fatal unless
 // cfg.Strict is set; otherwise the later stages warn and leave their
-// aggregates partially filled.
+// aggregates partially filled. Notices raised inside the fetchers (rate-limit
+// sleeps, API ceilings) also go to cfg.Warnf.
 func Collect(ctx context.Context, c *Client, login string, cfg CollectConfig) (*Profile, error) {
 	warnf := cfg.Warnf
 	if warnf == nil {
 		warnf = func(string, ...any) {}
 	}
+	// Work on a copy so the caller's client keeps its own warn sink.
+	cc := *c
+	cc.warnf = warnf
+	c = &cc
 	loc := cfg.Location
 	if loc == nil {
 		loc = time.UTC

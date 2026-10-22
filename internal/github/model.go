@@ -74,7 +74,8 @@ type Profile struct {
 	// SeedRepos are the repos where the user actually committed, unioned
 	// across every contribution year via commitContributionsByRepository.
 	// Used by FetchProductive so commit-history probes land where there is
-	// signal instead of across the long tail of empty owned repos.
+	// signal instead of across the long tail of empty owned repos. Ordered
+	// most recently active first, so a -top-repos cap keeps current work.
 	SeedRepos []RepoInfo
 
 	// ContributionYears lists every calendar year the user has been active

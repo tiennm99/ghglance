@@ -2,9 +2,10 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -67,20 +68,37 @@ func contributionWindows(year int, now time.Time) [][2]time.Time {
 //
 //   - Days → p.DailyContributionsAllTime
 //   - Commit count → p.TotalCommitsAllTime
-//   - Repos the user committed in → p.SeedRepos (deduplicated by owner/name)
+//   - Repos the user committed in → p.SeedRepos (deduplicated by owner/name,
+//     most recently active first)
 //
 // Fork and private repos are filtered client-side per opts so the caller can
-// run the same pipeline with different visibility policies.
+// run the same pipeline with different visibility policies. A window that
+// comes back without user data is skipped so the rest still fill in; the
+// skipped windows are reported together as one error once the loop ends.
 func (c *Client) FetchContributionsAllTime(ctx context.Context, p *Profile, opts FetchOptions) error {
 	years := append([]int(nil), p.ContributionYears...)
 	sort.Ints(years) // ascending so the concatenated series is oldest→newest
 
-	seen := map[string]int{} // "owner/name" → index in p.SeedRepos
+	lastActive := map[string]time.Time{} // "owner/name" → end of latest window it appeared in
 	now := time.Now().UTC()
+	var missing []string
+
+	// Rank on every exit path, so a cap applied to a partial list still
+	// keeps the most recently active repos.
+	defer func() { rankByRecentActivity(p.SeedRepos, lastActive) }()
+
+	fetch := func(from, to time.Time, foldCalendar bool) (bool, error) {
+		saturated, err := c.fetchContributionWindow(ctx, p, opts, from, to, lastActive, foldCalendar)
+		if errors.Is(err, errNoUserData) {
+			missing = append(missing, from.Format("2006-01-02")+".."+to.Format("2006-01-02"))
+			return false, nil
+		}
+		return saturated, err
+	}
 
 	for _, y := range years {
 		for _, w := range contributionWindows(y, now) {
-			saturated, err := c.fetchContributionWindow(ctx, p, opts, w[0], w[1], seen, true)
+			saturated, err := fetch(w[0], w[1], true)
 			if err != nil {
 				return err
 			}
@@ -93,13 +111,27 @@ func (c *Client) FetchContributionsAllTime(ctx context.Context, p *Profile, opts
 			// days and commit totals, and folding them again would
 			// double-count.
 			for _, m := range monthWindows(w[0], w[1]) {
-				if _, err := c.fetchContributionWindow(ctx, p, opts, m[0], m[1], seen, false); err != nil {
+				if _, err := fetch(m[0], m[1], false); err != nil {
 					return err
 				}
 			}
 		}
 	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w for %s; all-time totals are partial", errNoUserData, strings.Join(missing, ", "))
+	}
 	return nil
+}
+
+// errNoUserData marks a contribution window whose response held no user.
+var errNoUserData = errors.New("contributions returned no user data")
+
+// rankByRecentActivity orders repos by the end of the latest window each
+// was seen in, newest first. Ties keep their first-seen order.
+func rankByRecentActivity(repos []RepoInfo, lastActive map[string]time.Time) {
+	sort.SliceStable(repos, func(i, j int) bool {
+		return lastActive[repos[i].Owner+"/"+repos[i].Name].After(lastActive[repos[j].Owner+"/"+repos[j].Name])
+	})
 }
 
 // monthWindows splits an arbitrary window into calendar months, clamped to the
@@ -123,13 +155,14 @@ func monthWindows(from, to time.Time) [][2]time.Time {
 // the profile and reports whether its repo list came back at the ceiling (and
 // so is truncated). foldCalendar is false for the month re-queries that follow
 // a saturated quarter: those exist only to recover repos, and re-folding their
-// days would count the same contributions twice.
+// days would count the same contributions twice. lastActive records, per
+// "owner/name", the end of the latest window the repo appeared in.
 func (c *Client) fetchContributionWindow(
 	ctx context.Context,
 	p *Profile,
 	opts FetchOptions,
 	from, to time.Time,
-	seen map[string]int,
+	lastActive map[string]time.Time,
 	foldCalendar bool,
 ) (bool, error) {
 	vars := map[string]any{
@@ -142,12 +175,7 @@ func (c *Client) fetchContributionWindow(
 		return false, err
 	}
 	if resp.User == nil {
-		// Don't abort the run — other windows may still yield data — but
-		// make the partial-data case visible instead of rendering an
-		// empty all-time card silently.
-		fmt.Fprintf(os.Stderr, "warn: contributions %s..%s returned no user data\n",
-			from.Format("2006-01-02"), to.Format("2006-01-02"))
-		return false, nil
+		return false, errNoUserData
 	}
 
 	cc := resp.User.ContributionsCollection
@@ -171,9 +199,9 @@ func (c *Client) fetchContributionWindow(
 	if saturated && !foldCalendar {
 		// A month at the ceiling has nowhere finer to go, so this is as
 		// complete as the API will answer. Say so instead of implying the
-		// list covers everything.
-		fmt.Fprintf(os.Stderr,
-			"warn: contributions %s..%s hit the %d-repo ceiling even at month granularity; some repos are missing from commit probing\n",
+		// list covers everything. It stays a warning even under Strict:
+		// heavy contributors would otherwise fail on every run.
+		c.warn("contributions %s..%s hit the %d-repo ceiling even at month granularity; some repos are missing from commit probing",
 			from.Format("2006-01-02"), to.Format("2006-01-02"), maxRepositoriesPerWindow)
 	}
 
@@ -187,10 +215,13 @@ func (c *Client) fetchContributionWindow(
 		}
 		info := r.toRepoInfo(p.Login)
 		key := info.Owner + "/" + info.Name
-		if _, ok := seen[key]; ok {
+		last, ok := lastActive[key]
+		if to.After(last) {
+			lastActive[key] = to
+		}
+		if ok {
 			continue
 		}
-		seen[key] = len(p.SeedRepos)
 		p.SeedRepos = append(p.SeedRepos, info)
 	}
 	return saturated, nil
