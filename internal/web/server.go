@@ -98,12 +98,12 @@ func New(cfg Config) (*Server, error) {
 	}
 	pages, err := parsePages()
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, err
 	}
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, err
 	}
 	s := &Server{
@@ -123,8 +123,17 @@ func New(cfg Config) (*Server, error) {
 // Close stops the workers and releases the data directory.
 func (s *Server) Close() {
 	s.queue.Stop()
-	s.store.Close()
+	if err := s.store.Close(); err != nil {
+		log.Printf("close data directory: %v", err)
+	}
 }
+
+// shutdownTimeout bounds draining in-flight requests on shutdown. After it,
+// Close stops the workers and revokes dropped sign-in tokens, each revoke
+// call bounded by oauthTimeout, so the container's stop grace period
+// (stop_grace_period in compose.yml) must cover at least shutdownTimeout
+// plus two oauthTimeout windows (dropped queued jobs, then running ones).
+const shutdownTimeout = 15 * time.Second
 
 // Run serves until ctx is cancelled, then drains in-flight requests and
 // stops the job workers. Queued and running jobs are abandoned; nothing
@@ -159,7 +168,7 @@ func Run(ctx context.Context, cfg Config) error {
 	case <-ctx.Done():
 	}
 	log.Printf("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
 }
@@ -175,7 +184,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 	mux.Handle("GET /static/", http.StripPrefix("/static/", s.withCache(s.static, "public, max-age=3600")))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +349,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 			d.CooldownLeft = humanDuration(left)
 		}
 		if s.cfg.Retention > 0 {
-			d.ExpiresIn = humanDuration(max(meta.GeneratedAt.Add(s.cfg.Retention).Sub(time.Now()), time.Minute))
+			d.ExpiresIn = humanDuration(max(time.Until(meta.GeneratedAt.Add(s.cfg.Retention)), time.Minute))
 		}
 		for _, f := range card.Filenames() {
 			src, err := s.cardDataURI(login, d.Theme, f)
@@ -368,7 +377,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(s.queue.Status(login))
+	// A failed write means the poller went away; there is no one to tell.
+	_ = json.NewEncoder(w).Encode(s.queue.Status(login))
 }
 
 // cardDataURI reads one stored card and returns it as a base64 data: URI.
@@ -380,7 +390,7 @@ func (s *Server) cardDataURI(login, themeID, file string) (template.URL, error) 
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
 		return "", err
@@ -407,7 +417,7 @@ func (s *Server) render(w http.ResponseWriter, status int, page string, d pageDa
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	fmt.Fprint(w, buf.String())
+	_, _ = io.WriteString(w, buf.String())
 }
 
 func (s *Server) renderMessage(w http.ResponseWriter, status int, heading, message string) {
