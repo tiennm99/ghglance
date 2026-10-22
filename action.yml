@@ -32,19 +32,28 @@ inputs:
     required: false
     default: sunday
   top_repos:
-    description: Optional cap on seed repos probed for commit history (0 = unlimited)
+    description: Optional cap on seed repos probed for commit history, keeping the most recently active ones (0 = unlimited)
     required: false
     default: "0"
   commits_per_repo:
     description: Max commits sampled per repo, `0` for every commit (covers last-year and all-time aggregates)
     required: false
     default: "500"
+  timeout:
+    description: |
+      Overall deadline for fetching data, as a Go duration (e.g. 45m, 1h30m); 0 = no limit.
+      The job's own timeout-minutes still caps the run.
+    required: false
+    default: 30m
   include_forks:
     description: Include forked repos in stats and commit probing
     required: false
     default: "true"
   include_private:
-    description: Include private repos (requires PAT with repo scope; silently no-op otherwise)
+    description: |
+      Include private repos in repo-derived data: repo lists, stars, languages and the repos
+      sampled for commit-based cards (requires PAT with repo scope; silently no-op otherwise).
+      Contribution totals and calendar cards reflect whatever the token can read either way.
     required: false
     default: "true"
   include_org_repos:

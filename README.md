@@ -20,12 +20,12 @@ Cards rendered:
 | 0 | Profile details | Login (Name) title + Octicon-labelled rows for company, location, link, join date (with age), followers/following, repo count |
 | 1 | Repos per language | Donut + legend: how many owned non-fork repos use each language as primary |
 | 2 | Most commit language (last year) | Donut + legend: last-year commits byte-weighted across each repo's language breakdown |
-| 3 | Stats | Star, commit (lifetime + last-year), PR, issue, PR-review, contributed-to totals |
+| 3 | Stats | Stars, commits (lifetime and last year), total PRs and issues, PR reviews (last year), repos contributed to |
 | 4 | Productive time (last year) | 24-hour bar chart with axes, title includes `UTC±N.NN` |
 | 5 | Productive weekday (last year) | 7-bar day-of-week chart, peak day highlighted |
 | 6 | Contributions (last year) | Smooth monthly area chart, Y-axis mirrored both sides, `mm/yy` labels |
 | 7 | Contributions heatmap | Classic 7×53 calendar grid with theme-derived intensity ramp and legend |
-| 8 | Top starred repos | Top 7 owned non-fork repos by ⭐, language dot + proportional bar |
+| 8 | Top starred repos | Top 7 owned non-fork repos by ⭐, language dot + proportional bar; lists private repo names when `include_private` is on and the token can read them |
 | 9 | Streak | Current streak, longest streak, active days / total days with date ranges |
 | 10 | **Most commit language (all time)** | Same as #2 but over lifetime commits |
 | 11 | **Productive time (all time)** | Same as #4 but over lifetime commits |
@@ -88,6 +88,7 @@ jobs:
           include_forks: "true"
           include_private: "true"
           include_org_repos: "false"  # "true" also counts org repos you administer (token needs read:org)
+          timeout: "30m"  # fetch deadline; raise it for very large accounts with commits_per_repo: "0"
           commit_changes: "true"
 ```
 
@@ -122,10 +123,11 @@ Then embed the cards in your `README.md`:
 | `themes`           | `dracula`                        | Comma-separated theme ids, or `all`                                     |
 | `tz`               | `UTC`                            | IANA tz for the productive-time card (e.g. `Asia/Saigon`)               |
 | `start_of_week`    | `sunday`                         | First day of week for heatmap rows and weekday bars (`sunday`…`saturday`) |
-| `top_repos`        | `0`                              | Optional cap on seed repos probed for commit history (`0` = unlimited)  |
+| `top_repos`        | `0`                              | Optional cap on seed repos probed for commit history, keeping the most recently active ones (`0` = unlimited) |
 | `commits_per_repo` | `500`                            | Max commits sampled per repo, `0` = every commit (covers last-year and all-time aggregates) |
+| `timeout`          | `30m`                            | Overall fetch deadline as a Go duration, `0` = no limit; the job's `timeout-minutes` still caps the run |
 | `include_forks`    | `true`                           | Include forked repos in stats and commit probing                        |
-| `include_private`  | `true`                           | Include private repos (requires PAT with `repo` scope; silently no-op otherwise) |
+| `include_private`  | `true`                           | Include private repos in repo lists, stars, languages and commit sampling (requires PAT with `repo` scope; silently no-op otherwise). Contribution totals reflect whatever the token can read; see [Tokens & permissions](#tokens--permissions) |
 | `include_org_repos`| `false`                          | Count org-owned repos you administer toward stars, repo count, languages, top-starred (needs `read:org`) |
 | `commit_changes`   | `false`                          | Commit generated cards back to the repo                                 |
 | `commit_message`   | `chore: update ghglance cards`    | Commit message                                                          |
@@ -168,10 +170,10 @@ ghglance -user tiennm99 -themes dracula -include-org-repos -out output
 | `-themes`           | `dracula`       | Comma-separated theme ids, or `all`                                    |
 | `-tz`               | `Local`         | IANA timezone for productive-time cards                                |
 | `-start-of-week`    | `sunday`        | First day of week for heatmap rows and weekday bars (`sunday`…`saturday`) |
-| `-top-repos`        | `0`             | Optional cap on seed repos probed (`0` = unlimited)                    |
+| `-top-repos`        | `0`             | Optional cap on seed repos probed, keeping the most recently active ones (`0` = unlimited) |
 | `-commits-per-repo` | `500`           | Max commits sampled per repo, `0` = every commit                       |
 | `-include-forks`    | `true`          | Include forked repos in the stats                                      |
-| `-include-private`  | `true`          | Include private repos (requires `repo` PAT scope; silently no-op otherwise) |
+| `-include-private`  | `true`          | Include private repos in repo lists, stars, languages and commit sampling (requires `repo` PAT scope; silently no-op otherwise). Contribution totals reflect whatever the token can read |
 | `-include-org-repos`| `false`         | Count org-owned repos you administer toward stars, repo count, languages, top-starred |
 | `-timeout`          | `30m`           | Overall fetch deadline (per generation job under `-serve`), `0` = no limit |
 | `-list-themes`      |                 | Print available theme ids and exit                                     |
@@ -238,7 +240,8 @@ How submissions are handled:
 - **Retention.** Cards are deleted `-retention` (default `24h`) after they
   were generated, checked at startup and hourly. The user's page then
   offers a fresh generation.
-- **Limits.** One queued or running job per user, `-workers` jobs at once,
+- **Limits.** One queued or running job per user, at most three queued or
+  running jobs per submitter at once, `-workers` jobs at once,
   `-timeout` per job, and five submissions per client followed by one
   every two minutes. A client is an IPv4 address or an IPv6 /64. Behind a
   reverse proxy on a private or loopback address, the client address comes
@@ -395,9 +398,18 @@ The default `${{ github.token }}` can read public user data but will not see
 your private-repo commits. For accurate stats, create a **classic** personal
 access token with `read:user` and `repo`, save it as a repo secret (e.g.
 `GHGLANCE_TOKEN`), and pass it via the `token` input. `include_private`
-defaults to `true` so those commits are counted automatically once the token
-has `repo` scope; pass `include_private: "false"` if you want to keep private
-work out of the rendered cards even when the token can see it.
+defaults to `true` so private repos are used automatically once the token
+has `repo` scope; with it on, the Top starred repos card can show private repo
+names.
+
+`include_private: "false"` filters only the repo-derived data: repo lists,
+stars, languages, top-starred repos and the repos sampled for the commit-based
+cards. Contribution totals (commits, PRs, issues, reviews) and the
+calendar-derived cards reflect whatever the token can read, because GitHub's
+counters cannot be split by repo privacy. To keep private work off those too,
+use a token without `repo` scope, which removes per-repo private detail, and
+turn off "Private contributions" in your GitHub profile settings, which hides
+the anonymised private counts.
 
 Enabling `include_org_repos` additionally needs `read:org` on the token, and
 SSO authorization for any org that enforces it — otherwise those repos stay
