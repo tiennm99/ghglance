@@ -36,7 +36,7 @@ func (statsCard) SVG(p *github.Profile, t theme.Theme) ([]byte, error) {
 		{iconCommit, "Total Commits (last year)", formatInt(p.TotalCommits)},
 		{iconPR, "Total PRs", formatInt(p.TotalPRs)},
 		{iconIssue, "Total Issues", formatInt(p.TotalIssues)},
-		{iconReview, "Total PR Reviews", formatInt(p.TotalReviews)},
+		{iconReview, "PR Reviews (last year)", formatInt(p.TotalReviews)},
 		{iconRepos, "Contributed to", formatInt(p.TotalContributedTo)},
 	}
 
