@@ -930,3 +930,21 @@ func TestSubmittedTimezoneIsNotAutodetected(t *testing.T) {
 		t.Error("re-rendered form lets the browser timezone replace the submitted one")
 	}
 }
+
+func TestSubmitStatus(t *testing.T) {
+	cases := []struct {
+		err  error
+		want int
+	}{
+		{errTooManyJobs, http.StatusTooManyRequests},
+		{errTokenRejected, http.StatusBadRequest},
+		{errTokenRejectedPasted, http.StatusBadRequest},
+		{errQueueFull, http.StatusServiceUnavailable},
+		{errStopped, http.StatusServiceUnavailable},
+	}
+	for _, c := range cases {
+		if got := submitStatus(c.err); got != c.want {
+			t.Errorf("submitStatus(%q) = %d, want %d", c.err, got, c.want)
+		}
+	}
+}

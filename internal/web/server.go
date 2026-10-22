@@ -10,6 +10,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -279,6 +280,20 @@ func (s *Server) readSubmission(w http.ResponseWriter, r *http.Request) (submiss
 	return sub, form, true
 }
 
+// submitStatus maps a Submit refusal to an HTTP status: the visitor's own
+// limit is 429, a token GitHub rejected is 400, and anything else means the
+// server cannot take work right now.
+func submitStatus(err error) int {
+	switch {
+	case errors.Is(err, errTooManyJobs):
+		return http.StatusTooManyRequests
+	case errors.Is(err, errTokenRejected), errors.Is(err, errTokenRejectedPasted):
+		return http.StatusBadRequest
+	default:
+		return http.StatusServiceUnavailable
+	}
+}
+
 // enqueue queues sub and redirects to the user's page, adding notice when
 // one is given. It reports whether a new job took the submission's token;
 // when not, the caller still owns it. The cooldown is checked by the job,
@@ -292,7 +307,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request, sub submission,
 	}
 	created, err := s.queue.Submit(sub)
 	if err != nil {
-		s.render(w, http.StatusServiceUnavailable, "index", pageData{Title: "ghglance", Error: capitalize(err.Error()) + ".", Form: form})
+		s.render(w, submitStatus(err), "index", pageData{Title: "ghglance", Error: capitalize(err.Error()) + ".", Form: form})
 		return false
 	}
 	switch {

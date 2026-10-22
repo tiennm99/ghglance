@@ -44,8 +44,10 @@ var (
 	errNoToken   = errors.New("this generation has no token; sign in with GitHub or paste your own token")
 	errFresh     = errors.New("these cards are recent; you signed in as another account, so it does not skip the wait")
 	// errFreshPasted is errFresh for a pasted token.
-	errFreshPasted = errors.New("these cards are recent; your token belongs to another account, so it does not skip the wait")
-	errTooManyJobs = fmt.Errorf("you already have %d card generations queued or running; wait for one to finish", maxJobsPerSubmitter)
+	errFreshPasted         = errors.New("these cards are recent; your token belongs to another account, so it does not skip the wait")
+	errTokenRejected       = errors.New("GitHub did not accept your sign-in token")
+	errTokenRejectedPasted = errors.New("GitHub did not accept your token")
+	errTooManyJobs         = fmt.Errorf("you already have %d card generations queued or running; wait for one to finish", maxJobsPerSubmitter)
 	// errForeignPrivate refuses a private-capable sign-in for another
 	// account; errForeignPrivatePasted is the same for a pasted token.
 	// Neither names the token's account: the message is shown on the
@@ -183,9 +185,9 @@ func (q *Queue) Submit(sub submission) (created bool, err error) {
 				return false, errStopped
 			}
 			if sub.Pasted {
-				return false, errors.New("GitHub did not accept your token")
+				return false, errTokenRejectedPasted
 			}
-			return false, errors.New("GitHub did not accept your sign-in token")
+			return false, errTokenRejected
 		}
 	}
 	submitter := strings.ToLower(info.Login)
