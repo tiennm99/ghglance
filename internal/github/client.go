@@ -197,18 +197,20 @@ func graphQLRateLimited(errs []gqlError) bool {
 	return false
 }
 
-// rateLimitWait derives a sleep duration from response headers: Retry-After
-// (secondary rate limits) takes precedence over X-RateLimit-Reset (primary).
-// Returns a 60s floor if neither header is usable. The result is not capped,
-// so the caller can refuse a reset that is too far away instead of sleeping
-// part of the way and retrying while still limited.
+// rateLimitWait derives a sleep duration from response headers, in GitHub's
+// documented order: Retry-After first; X-RateLimit-Reset only when
+// X-RateLimit-Remaining is 0, because GitHub sends Reset on every response and
+// for a secondary limit it points at the end of the unrelated hourly window;
+// otherwise a 60s floor. The result is not capped, so the caller can refuse a
+// reset that is too far away instead of sleeping part of the way and retrying
+// while still limited.
 func rateLimitWait(resp *http.Response) time.Duration {
 	if v := resp.Header.Get("Retry-After"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
 			return time.Duration(secs) * time.Second
 		}
 	}
-	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
+	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" && resp.Header.Get("X-RateLimit-Remaining") == "0" {
 		if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
 			wait := time.Until(time.Unix(ts, 0))
 			if wait > 0 {

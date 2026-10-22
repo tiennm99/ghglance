@@ -32,6 +32,7 @@ const okBody = `{"data":{"n":1}}`
 
 func TestQueryRetriesOnceAfterRateLimit(t *testing.T) {
 	resetSoon := strconv.FormatInt(time.Now().Add(30*time.Second).Unix(), 10)
+	resetLate := strconv.FormatInt(time.Now().Add(47*time.Minute).Unix(), 10)
 	cases := []struct {
 		name  string
 		first fakeReply
@@ -51,7 +52,8 @@ func TestQueryRetriesOnceAfterRateLimit(t *testing.T) {
 		},
 		{
 			name: "secondary-limit 403 recognised by its body",
-			first: fakeReply{Status: 403, Header: headers("X-RateLimit-Remaining", "4321"),
+			first: fakeReply{Status: 403, Header: headers(
+				"X-RateLimit-Remaining", "4321", "X-RateLimit-Reset", resetLate),
 				Body: `{"message":"You have exceeded a secondary rate limit."}`},
 			minWait: 60 * time.Second, maxWait: 60 * time.Second,
 		},
