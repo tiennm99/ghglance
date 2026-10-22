@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -113,7 +114,7 @@ func (s *Store) Publish(p *github.Profile, meta Meta) error {
 	ok := false
 	defer func() {
 		if !ok {
-			os.RemoveAll(genAbs)
+			logCleanup(os.RemoveAll(genAbs))
 		}
 	}()
 
@@ -139,14 +140,22 @@ func (s *Store) Publish(p *github.Profile, meta Meta) error {
 		return fmt.Errorf("link generation: %w", err)
 	}
 	if err := s.root.Rename(tmpLink, key); err != nil {
-		s.root.Remove(tmpLink)
+		logCleanup(s.root.Remove(tmpLink))
 		return fmt.Errorf("publish generation: %w", err)
 	}
 	ok = true
 	if old != "" && old != genRel && isGenTarget(old) {
-		s.root.RemoveAll(old)
+		logCleanup(s.root.RemoveAll(old))
 	}
 	return nil
+}
+
+// logCleanup logs a failed best-effort removal. Nothing depends on it
+// succeeding: the sweep at the next start removes whatever is left.
+func logCleanup(err error) {
+	if err != nil {
+		log.Printf("store cleanup: %v", err)
+	}
 }
 
 // isGenTarget reports whether a link target is a generation directory this
@@ -167,7 +176,7 @@ func (s *Store) sweep() {
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasPrefix(name, ".link-") {
-			s.root.Remove(name)
+			logCleanup(s.root.Remove(name))
 			continue
 		}
 		if e.Type()&fs.ModeSymlink == 0 {
@@ -183,7 +192,7 @@ func (s *Store) sweep() {
 	}
 	for _, g := range gens {
 		if !live[g.Name()] {
-			s.root.RemoveAll(path.Join(genDir, g.Name()))
+			logCleanup(s.root.RemoveAll(path.Join(genDir, g.Name())))
 		}
 	}
 }
@@ -229,7 +238,7 @@ func (s *Store) expireOne(key string, retention time.Duration, now time.Time) bo
 		return false
 	}
 	if isGenTarget(target) {
-		s.root.RemoveAll(target)
+		logCleanup(s.root.RemoveAll(target))
 	}
 	return true
 }
