@@ -66,7 +66,7 @@ Never write comments that describe what well-named code does (`// increment coun
 ## Testing
 
 - Unit tests live in the same package. No test calls the real GitHub API.
-- `internal/card`, `internal/theme` and the pure helpers in `internal/github` are tested directly; integration verification of the github fetchers against GitHub is manual (`./ghglance -token ...`).
+- `internal/card`, `internal/theme` and the pure helpers in `internal/github` are tested directly; the github fetchers and client retry logic are tested against a fake GitHub transport, and only live API behaviour is checked by hand (`./ghglance -token ...`).
 - `internal/web` is tested over HTTP with `net/http/httptest`: handlers through recorders, a fake `Fetcher` in place of GitHub, and a fake GitHub OAuth server for sign-in.
 - `go vet ./...` clean before every commit.
 

@@ -78,7 +78,7 @@ All network I/O. Exposes a `*Client` with three fetchers; every call takes a `co
 | `FetchContributionsAllTime(ctx, p, opts)` | Profile | `SeedRepos`, `DailyContributionsAllTime`, `TotalCommitsAllTime` |
 | `FetchProductive(ctx, p, repos, loc, cap)` | Profile + seed + tz + cap | `Productive`, `Weekday`, `CommitsByLanguage`, `ProductiveAllTime`, `WeekdayAllTime`, `CommitsByLanguageAllTime` |
 
-Call order in `github.Collect` (used by the CLI and every web job): Profile → AllTime → Productive. `Collect` also applies the optional `-top-repos` cap to the seed list before `FetchProductive`; only a profile failure is fatal unless `CollectConfig.Strict` is set (the web path sets it). `Client.query` handles GitHub rate limits transparently — on 429 or 403 with `X-RateLimit-Remaining: 0`, it honors `Retry-After` / `X-RateLimit-Reset` (capped at 5 minutes) and retries once.
+Call order in `github.Collect` (used by the CLI and every web job): Profile → AllTime → Productive. `Collect` also applies the optional `-top-repos` cap to the seed list before `FetchProductive`; only a profile failure is fatal unless `CollectConfig.Strict` is set (the web path sets it). `Client.query` handles GitHub rate limits transparently — on a 429, a primary or secondary-limit 403, or a GraphQL `RATE_LIMITED` error inside a 200, it waits once for `Retry-After`, else `X-RateLimit-Reset` when the primary quota is spent, else 60 s, and retries; a wait over 5 minutes fails at once.
 
 ### `internal/card`
 
@@ -136,12 +136,18 @@ commitHistoryQuery ──► Productive + Weekday + CommitsByLanguage (+ AllTime
 - `internal/github/collect_test.go` — `TestUTCOffsetLabel` covers UTC, Asia/Saigon, half-hour (Kolkata), quarter-hour (Kathmandu) zones. `TestParseWeekday` covers the `-start-of-week` input parsing. `TestScopesIncludeRepo` covers reading a classic token's `X-OAuth-Scopes` as private-capable.
 - `internal/github/commit_cap_test.go` — `reachedCommitCap`, the per-repo commit sampling limit.
 - `internal/github/contribution_scope_test.go` — quarter and month contribution windows (full year, current year clamped to now, future year, months covering a quarter exactly) and owner affiliations.
+- `internal/github/fake_github_test.go` — the fake GitHub transport the fetcher tests below run against.
+- `internal/github/client_test.go` — `Client.query` rate-limit retries (429, primary and secondary 403, GraphQL `RATE_LIMITED`), failing fast past the 5-minute wait, one retry only, context cancellation, and UTF-8-safe truncation.
+- `internal/github/profile_fetch_test.go` — `FetchProfile` repo pagination and filtering, login casing, and a missing user.
+- `internal/github/productive_fetch_test.go` — commit attribution, `FetchProductiveBuckets` pagination and commit cap, and language totals kept when a later repo fails.
+- `internal/github/contributions_fetch_test.go` — `FetchContributionsAllTime` month fallback for a saturated quarter, the month ceiling warning, and windows without user data.
+- `internal/github/collect_fetch_test.go` — `Collect` top-repos cap, strict stage failures, and partial profiles with warnings.
 - `internal/theme/theme_test.go` — theme data.
 - `internal/web/web_test.go` — validation, form parsing, store publish/sweep/expiry and path safety, queue dedup and token-owner rules, handlers, rate limiter and client keys. A fake `Fetcher` stands in for GitHub.
-- `internal/web/oauth_test.go` — the sign-in flow against a fake GitHub OAuth server (`httptest.NewServer`): scopes, state and cookie checks, expiry, the pending-sign-in cap, scope downgrades and wider grants, and token revocation.
+- `internal/web/oauth_test.go` — the sign-in flow against a fake GitHub OAuth server (`httptest.NewServer`): scopes, state and cookie checks, expiry, the pending-sign-in caps, scope downgrades and wider grants, and token revocation.
 - `internal/web/pasted_token_test.go` — pasted-token precedence, foreign accounts, never echoing the token, and no revocation on shutdown.
 
-No test calls the real GitHub API: the github fetchers are verified by real runs (`-token` + local build), and internal/web tests use `httptest` with fakes.
+No test calls the real GitHub API: the github fetchers and client retry logic are tested against a fake GitHub transport, only live API behaviour is checked by hand (`-token` + local build), and internal/web tests use `httptest` with fakes.
 
 ## Naming conventions
 

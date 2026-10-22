@@ -140,8 +140,8 @@ Light themes (`default`, `github`, `nord_bright`, etc.) use `StrokeOpacity: 1` w
 | Empty `-user` | Exit 2, usage printed |
 | Unknown theme | Exit 2, suggests `-list-themes` |
 | GraphQL 4xx/5xx | Error wrapped with HTTP status and truncated (UTF-8-safe) body |
-| Primary rate limit (429 / 403 + remaining=0) | Sleep up to 5 min honoring `Retry-After` / `X-RateLimit-Reset`, retry once; longer windows surface as error |
-| Per-year query returns nil user | Warn to stderr; other years still contribute |
+| Rate limit (429, primary or secondary 403, GraphQL `RATE_LIMITED`) | Wait once for `Retry-After`, else `X-RateLimit-Reset` when remaining=0, else 60 s, then retry; a wait over 5 min fails at once |
+| Contribution window (quarter or month) returns nil user | Skipped; other windows still contribute, and after the loop an "all-time totals are partial" error names the missing windows: a warning in the CLI and Action, fatal for web jobs (`Strict`) |
 | `FetchProductive` network error | Warn to stderr; partial data rendered |
 | Unknown timezone | Warn to stderr; fall back to UTC |
 | Overall timeout (`-timeout`) or Ctrl-C | `ctx` cancels in-flight requests; partial data may render |
@@ -207,7 +207,9 @@ job ends (sign-in token only) ─► DELETE api.github.com/applications/{client_
   `-oauth-client-secret` and `-public-url` are all set. Scopes come from
   the ticked options (`read:user`; `repo` for private; `read:org` on top
   for org repos). `/auth/start` parks the validated submission under a
-  256-bit random `state` (10-minute TTL, 1,000 entries max) and binds it to
+  256-bit random `state` (10-minute TTL, 1,000 entries max, at most 3
+  per client key: a further start is refused, while a browser starting
+  again replaces its own earlier sign-in) and binds it to
   the browser with an `HttpOnly`, `SameSite=Lax` cookie on `/`, named
   `__Host-ghglance_oauth` and `Secure` when the public URL is https so a
   sibling subdomain cannot plant it (plain `ghglance_oauth` over http, a

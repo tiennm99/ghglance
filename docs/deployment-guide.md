@@ -74,7 +74,7 @@ The Action commits SVGs to `output/<theme>/` on the default branch. GitHub serve
 
 ## 2. Prebuilt binaries
 
-Each tag under `v*` publishes:
+Each plain `vX.Y.Z` tag publishes (prerelease tags such as `v1.3.0-rc1` do not trigger `release.yml`):
 - Linux `amd64`, `arm64`
 - macOS `amd64`, `arm64`
 - Windows `amd64`
@@ -136,7 +136,7 @@ format-stable, so no data migration is involved.
 
 ## Docker image
 
-Published to `ghcr.io/tiennm99/ghglance:<tag>` on each `v*` release via `.github/workflows/release.yml` (buildx, multi-tag: exact version, major.minor, major, latest).
+Published to `ghcr.io/tiennm99/ghglance:<tag>` on each plain `vX.Y.Z` release (prerelease tags publish nothing) via `.github/workflows/release.yml` (buildx, multi-tag: exact version, major.minor, major, latest).
 
 The Action itself uses a runner-built image by default (`image: Dockerfile` in `action.yml`). To switch to the pre-built image for faster cold starts, edit `action.yml`:
 
@@ -199,7 +199,7 @@ re-pointed.
 
 No REST calls today. Future `-accurate-languages` mode will push toward 1000+ REST per run; schedule that mode less frequently (weekly, not daily).
 
-The client auto-handles rate-limit responses: on 429 or 403 with `X-RateLimit-Remaining: 0`, it sleeps up to 5 minutes (honoring `Retry-After` / `X-RateLimit-Reset`) and retries once. A reset window longer than 5 min surfaces as an error so CI can reschedule instead of burning runner time. Use the `-timeout` flag (default 30m) to cap total fetch duration; `SIGINT`/`SIGTERM` cancels in-flight requests cleanly.
+The client auto-handles rate-limit responses: a 429, a primary-limit 403 (`X-RateLimit-Remaining: 0`), a secondary-limit 403 (`Retry-After` or a "secondary rate limit" body), or a GraphQL `RATE_LIMITED` error inside a 200. It waits once and retries: for `Retry-After` when sent, else until `X-RateLimit-Reset` when the primary quota is spent, else 60 s. A wait longer than 5 min fails at once so CI can reschedule instead of burning runner time. Use the `-timeout` flag (default 30m) to cap total fetch duration; `SIGINT`/`SIGTERM` cancels in-flight requests cleanly.
 
 ## Troubleshooting
 
