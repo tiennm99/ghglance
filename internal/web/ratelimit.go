@@ -27,12 +27,16 @@ type bucket struct {
 }
 
 // maxBuckets is a hard cap on tracked clients. Past it, idle buckets are
-// swept at most once per sweepEvery, and a new client is refused while the
-// table is still full: memory stays bounded and no request pays for a scan
-// of the whole table more than once a minute.
+// swept at most once per sweepEvery; while the table is still full, a new
+// client evicts the fullest of evictSample buckets picked from map
+// iteration instead of being refused, so a flood of fresh keys cannot lock
+// every new visitor out. Memory stays bounded, no request pays for a scan
+// of the whole table more than once a minute, and an evicted client merely
+// gets a fresh burst back.
 const (
-	maxBuckets = 10000
-	sweepEvery = time.Minute
+	maxBuckets  = 10000
+	sweepEvery  = time.Minute
+	evictSample = 8
 )
 
 func newRateLimiter(burst int, interval time.Duration) *rateLimiter {
@@ -55,15 +59,12 @@ func (l *rateLimiter) Allow(key string) bool {
 			l.sweepLocked(now)
 		}
 		if len(l.buckets) >= maxBuckets {
-			return false
+			l.evictLocked(now)
 		}
 		b = &bucket{tokens: l.burst, last: now}
 		l.buckets[key] = b
 	}
-	b.tokens += now.Sub(b.last).Seconds() / l.interval.Seconds()
-	if b.tokens > l.burst {
-		b.tokens = l.burst
-	}
+	b.tokens = l.refilled(b, now)
 	b.last = now
 	if b.tokens < 1 {
 		return false
@@ -82,6 +83,28 @@ func (l *rateLimiter) sweepLocked(now time.Time) {
 			delete(l.buckets, k)
 		}
 	}
+}
+
+// evictLocked drops the bucket holding the most tokens among the first
+// evictSample that map iteration yields: it is the one closest to the
+// state a fresh bucket would have, so dropping it gives away the least.
+func (l *rateLimiter) evictLocked(now time.Time) {
+	var victim string
+	most, n := -1.0, 0
+	for k, b := range l.buckets {
+		if t := l.refilled(b, now); t > most {
+			victim, most = k, t
+		}
+		if n++; n >= evictSample {
+			break
+		}
+	}
+	delete(l.buckets, victim)
+}
+
+// refilled is the token count b would hold at now, before spending.
+func (l *rateLimiter) refilled(b *bucket, now time.Time) float64 {
+	return min(b.tokens+now.Sub(b.last).Seconds()/l.interval.Seconds(), l.burst)
 }
 
 // clientKey is the rate-limit key for the submitting client: its IPv4
