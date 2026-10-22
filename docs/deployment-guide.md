@@ -143,8 +143,12 @@ The Action itself uses a runner-built image by default (`image: Dockerfile` in `
 ```yaml
 runs:
   using: docker
-  image: docker://ghcr.io/tiennm99/ghglance:v1
+  image: docker://ghcr.io/tiennm99/ghglance:1
 ```
+
+Image tags drop the `v` (`1.2.0`, `1.2`, `1`, `latest`), so `:v1` does not
+exist. Prefer the exact version (`:1.2.0`) over `:1`: with `:1`, callers
+pinned to an older `@v1.x.y` Action tag would still pull the newest image.
 
 ## Release process
 
@@ -166,8 +170,23 @@ runs:
 
 ## Rollback
 
-- Revert the tag: `git push --delete origin v1.2.0`, delete GitHub release, delete GHCR tag.
-- Users pinned to `@v1` keep working because the previous patch is still tagged.
+By the time a release is found broken, `update-major-tag` has already
+force-moved `v1` to it, and deleting the patch tag does not move `v1` back.
+Every caller on `@v1` keeps running the broken release until `v1` is
+re-pointed.
+
+1. Re-point the floating tag at the last good release:
+   `git tag -f v1 v1.1.0 && git push -f origin v1`. This fully restores
+   Action callers, because `action.yml` builds from the Dockerfile at the
+   tagged commit.
+2. Delete the bad tag and its release: `git push --delete origin v1.2.0`,
+   then delete the GitHub release.
+3. Fix GHCR. The bad release also moved `1`, `1.<minor>` and `latest`.
+   Re-point each to the last good image, for example
+   `docker buildx imagetools create -t ghcr.io/tiennm99/ghglance:1 ghcr.io/tiennm99/ghglance:1.1.0`
+   (repeat for `1.<minor>` and `latest`), then delete the bad `1.2.0` image
+   version. If the bad release was the first in its minor line, delete its
+   `1.<minor>` tag instead of re-pointing it.
 
 ## Rate limit considerations
 
