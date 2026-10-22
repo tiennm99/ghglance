@@ -29,6 +29,15 @@ const finishedJobTTL = time.Hour
 // refused rather than piling up in memory.
 const queueCapacity = 64
 
+// maxJobsPerSubmitter bounds the queued or running jobs one GitHub account
+// may have at once, across sign-ins and pasted tokens, so one submitter
+// cannot fill the queue.
+const maxJobsPerSubmitter = 3
+
+// tokenCheckTimeout bounds the submit-time lookup of whose token a
+// submission carries.
+const tokenCheckTimeout = 15 * time.Second
+
 var (
 	errQueueFull = errors.New("the generation queue is full, try again in a few minutes")
 	errStopped   = errors.New("server is shutting down")
@@ -36,6 +45,18 @@ var (
 	errFresh     = errors.New("these cards are recent; you signed in as another account, so it does not skip the wait")
 	// errFreshPasted is errFresh for a pasted token.
 	errFreshPasted = errors.New("these cards are recent; your token belongs to another account, so it does not skip the wait")
+	errTooManyJobs = fmt.Errorf("you already have %d card generations queued or running; wait for one to finish", maxJobsPerSubmitter)
+	// errForeignPrivate refuses a private-capable sign-in for another
+	// account; errForeignPrivatePasted is the same for a pasted token.
+	// Neither names the token's account: the message is shown on the
+	// target's public page.
+	errForeignPrivate       = errors.New("you signed in with access to private repositories, so you can only generate cards for your own account")
+	errForeignPrivatePasted = errors.New("the token can read private repositories, so it can only generate cards for its own account")
+	// errOwnPrivateUnticked refuses an own token that can read private
+	// repos while private repos are unticked: GitHub would fold private
+	// contributions into cards labelled as public data.
+	errOwnPrivateUnticked       = errors.New("your sign-in can read private repositories: tick Include private repos and sign in again")
+	errOwnPrivateUntickedPasted = errors.New("your token can read private repositories: tick Include private repos, or paste a token with only the read:user scope")
 )
 
 // Fetcher runs the GitHub fetch. Tests swap in a fake; the server uses
@@ -56,15 +77,19 @@ func (githubFetcher) TokenInfo(ctx context.Context, token string) (github.TokenI
 }
 
 // job is one queued generation. token is the submitter's token, held only
-// until the job ends and never logged or persisted. A sign-in token is
-// revoked on GitHub then; a pasted one (pasted is true) belongs to the
-// visitor and is only dropped.
+// until the job starts and never logged or persisted; the worker running
+// the job holds it after that. A sign-in token is revoked on GitHub when
+// the job ends; a pasted one (pasted is true) belongs to the visitor and is
+// only dropped. info describes the token, looked up at submit time;
+// submitter is its lowercased owner, empty without a token.
 type job struct {
-	key    string
-	login  string
-	opts   Options
-	token  string
-	pasted bool
+	key       string
+	login     string
+	opts      Options
+	token     string
+	pasted    bool
+	info      github.TokenInfo
+	submitter string
 
 	state    string
 	stage    string
@@ -86,7 +111,7 @@ type JobStatus struct {
 func (s JobStatus) Active() bool { return s.State == stateQueued || s.State == stateRunning }
 
 // Queue runs generation jobs on a fixed worker pool, with at most one queued
-// or running job per user.
+// or running job per user and maxJobsPerSubmitter per token owner.
 type Queue struct {
 	store    *Store
 	fetcher  Fetcher
@@ -133,35 +158,89 @@ func newQueue(store *Store, fetcher Fetcher, revoke func(token string), timeout,
 }
 
 // Submit queues a job for sub.Login. When that user already has a queued or
-// running job, it is left alone and created is false.
+// running job, it is left alone and created is false. It asks GitHub whose
+// token sub carries, refuses a token GitHub rejects, and refuses a
+// submission whose token owner already has maxJobsPerSubmitter jobs queued
+// or running.
 func (q *Queue) Submit(sub submission) (created bool, err error) {
+	key := userKey(sub.Login)
+	// A cheap first pass spares the GitHub lookup for a submission that
+	// would be deduplicated or refused anyway.
+	q.mu.Lock()
+	dup, err := q.admitLocked(key, "")
+	q.mu.Unlock()
+	if dup || err != nil {
+		return false, err
+	}
+
+	var info github.TokenInfo
+	if sub.Token != "" {
+		ctx, cancel := context.WithTimeout(q.ctx, tokenCheckTimeout)
+		info, err = q.fetcher.TokenInfo(ctx, sub.Token)
+		cancel()
+		if err != nil {
+			if q.ctx.Err() != nil {
+				return false, errStopped
+			}
+			if sub.Pasted {
+				return false, errors.New("GitHub did not accept your token")
+			}
+			return false, errors.New("GitHub did not accept your sign-in token")
+		}
+	}
+	submitter := strings.ToLower(info.Login)
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed {
-		return false, errStopped
-	}
-	q.pruneLocked()
-	key := userKey(sub.Login)
-	if j, ok := q.jobs[key]; ok && (j.state == stateQueued || j.state == stateRunning) {
-		return false, nil
-	}
-	if len(q.pending) >= queueCapacity {
-		return false, errQueueFull
+	if dup, err := q.admitLocked(key, submitter); dup || err != nil {
+		return false, err
 	}
 	j := &job{
-		key:    key,
-		login:  sub.Login,
-		opts:   sub.Options,
-		token:  sub.Token,
-		pasted: sub.Pasted,
-		state:  stateQueued,
-		queued: q.now(),
+		key:       key,
+		login:     sub.Login,
+		opts:      sub.Options,
+		token:     sub.Token,
+		pasted:    sub.Pasted,
+		info:      info,
+		submitter: submitter,
+		state:     stateQueued,
+		queued:    q.now(),
 	}
 	q.jobs[key] = j
 	q.pending = append(q.pending, j)
 	q.wake <- struct{}{}
 	return true, nil
 }
+
+// admitLocked checks whether a job for key may be queued. dup is true when
+// key already has an active job. A non-empty submitter is also refused once
+// it has maxJobsPerSubmitter active jobs.
+func (q *Queue) admitLocked(key, submitter string) (dup bool, err error) {
+	if q.closed {
+		return false, errStopped
+	}
+	q.pruneLocked()
+	if j, ok := q.jobs[key]; ok && j.active() {
+		return true, nil
+	}
+	if len(q.pending) >= queueCapacity {
+		return false, errQueueFull
+	}
+	if submitter != "" {
+		n := 0
+		for _, j := range q.jobs {
+			if j.submitter == submitter && j.active() {
+				n++
+			}
+		}
+		if n >= maxJobsPerSubmitter {
+			return false, errTooManyJobs
+		}
+	}
+	return false, nil
+}
+
+func (j *job) active() bool { return j.state == stateQueued || j.state == stateRunning }
 
 // Status reports the job for login, or stateNone when there is none.
 func (q *Queue) Status(login string) JobStatus {
@@ -246,17 +325,16 @@ func (q *Queue) worker() {
 		j := q.pending[0]
 		q.pending = q.pending[1:]
 		j.state, j.stage, j.started = stateRunning, "fetching from GitHub", q.now()
+		// The worker holds the token from here on; the job drops its copy.
+		token := j.token
+		j.token = ""
 		q.mu.Unlock()
 
-		err := q.run(j)
+		err := q.run(j, token)
 
 		// Revoke before reporting the job over, so a finished job never
 		// leaves a live sign-in token behind. A pasted token is the
 		// visitor's to keep or revoke; it is only dropped.
-		q.mu.Lock()
-		token := j.token
-		j.token = ""
-		q.mu.Unlock()
 		if !j.pasted {
 			q.revokeToken(token)
 		}
@@ -283,8 +361,9 @@ func (q *Queue) worker() {
 // view of GitHub would show, unless the token belongs to the target user.
 // GitHub folds every private contribution a token can see into the totals
 // and the calendar, so filtering repo lists alone is not enough: a token
-// that can read private repos is refused for anyone but its owner.
-func (q *Queue) run(j *job) error {
+// that can read private repos is refused for anyone but its owner, and
+// for its owner unless private repos are ticked.
+func (q *Queue) run(j *job, token string) error {
 	ctx := q.ctx
 	if q.timeout > 0 {
 		var cancel context.CancelFunc
@@ -292,27 +371,24 @@ func (q *Queue) run(j *job) error {
 		defer cancel()
 	}
 
-	q.mu.Lock()
-	token := j.token
-	q.mu.Unlock()
 	if token == "" {
 		return errNoToken
 	}
 	opts := j.opts
-	info, err := q.fetcher.TokenInfo(ctx, token)
-	if err != nil {
-		if j.pasted {
-			return errors.New("GitHub did not accept your token")
-		}
-		return errors.New("GitHub did not accept your sign-in token")
-	}
+	info := j.info
 	own := strings.EqualFold(info.Login, j.login)
+	if own && info.CanReadPrivate && !opts.IncludePrivate {
+		if j.pasted {
+			return errOwnPrivateUntickedPasted
+		}
+		return errOwnPrivateUnticked
+	}
 	if !own {
 		if info.CanReadPrivate {
 			if j.pasted {
-				return fmt.Errorf("your token belongs to %s and can read private repositories, so it can only generate cards for %s", info.Login, info.Login)
+				return errForeignPrivatePasted
 			}
-			return fmt.Errorf("you signed in as %s with access to private repositories, so you can only generate cards for %s", info.Login, info.Login)
+			return errForeignPrivate
 		}
 		opts.IncludePrivate, opts.IncludeOrgRepos = false, false
 		if q.store.cooldownLeft(j.login, q.cooldown, q.now()) > 0 {
@@ -329,7 +405,6 @@ func (q *Queue) run(j *job) error {
 		log.Printf("job %s: warn: "+format, append([]any{j.key}, args...)...)
 	}
 	profile, err := q.fetcher.Fetch(ctx, token, j.login, cfg)
-	token = ""
 	if q.ctx.Err() != nil {
 		return errStopped
 	}
@@ -347,7 +422,7 @@ func (q *Queue) run(j *job) error {
 	q.mu.Unlock()
 
 	scope := "public"
-	if own && opts.IncludePrivate {
+	if own && info.CanReadPrivate && opts.IncludePrivate {
 		scope = "private"
 	}
 	return q.store.Publish(profile, Meta{

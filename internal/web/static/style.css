@@ -160,6 +160,9 @@ details.own-token { margin-top: 20px; border-top: 1px solid var(--border); paddi
 details.own-token summary { cursor: pointer; font-weight: 600; padding: 4px 0; width: max-content; }
 details.own-token .field { margin-top: 12px; }
 details.own-token .hint { max-width: 640px; }
+/* app.js adds html.js; without it the page cannot refresh itself. */
+html.js .no-js, html:not(.js) .js-only { display: none; }
+
 .token-create { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 0; }
 
 .user-head .meta { color: var(--muted); margin: 0 0 20px; overflow-wrap: anywhere; }

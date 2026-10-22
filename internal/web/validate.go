@@ -82,8 +82,10 @@ type submission struct {
 }
 
 // formValues is the raw form, kept so a rejected post re-renders as typed.
-// It never carries a pasted token back to the page.
+// It never carries a pasted token back to the page. Submitted marks a form
+// the visitor posted, whose timezone must not be replaced by the browser's.
 type formValues struct {
+	Submitted       bool
 	User            string
 	TZ              string
 	StartOfWeek     string
@@ -111,6 +113,7 @@ func defaultForm() formValues {
 // returned with Pasted set.
 func parseSubmission(get func(string) string) (submission, formValues, error) {
 	f := formValues{
+		Submitted:       true,
 		User:            strings.TrimSpace(get("user")),
 		TZ:              strings.TrimSpace(get("tz")),
 		StartOfWeek:     strings.TrimSpace(get("start_of_week")),

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -35,15 +36,17 @@ type fetchCall struct {
 // Fetch waits out the job deadline and then returns a partial profile with
 // no error, as Collect does when it only warns about a late stage.
 // tokens maps a token to the account behind it; an unknown token belongs
-// to viewer and cannot read private repos.
+// to viewer and cannot read private repos. When tokenErr is set, GitHub
+// rejects every token.
 type fakeFetcher struct {
-	mu     sync.Mutex
-	calls  []fetchCall
-	viewer string
-	tokens map[string]github.TokenInfo
-	gate   chan struct{}
-	stall  bool
-	err    error
+	mu       sync.Mutex
+	calls    []fetchCall
+	viewer   string
+	tokens   map[string]github.TokenInfo
+	gate     chan struct{}
+	stall    bool
+	err      error
+	tokenErr error
 }
 
 func (f *fakeFetcher) Fetch(ctx context.Context, token, login string, cfg github.CollectConfig) (*github.Profile, error) {
@@ -71,6 +74,9 @@ func (f *fakeFetcher) Fetch(ctx context.Context, token, login string, cfg github
 func (f *fakeFetcher) TokenInfo(_ context.Context, token string) (github.TokenInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.tokenErr != nil {
+		return github.TokenInfo{}, f.tokenErr
+	}
 	if info, ok := f.tokens[token]; ok {
 		return info, nil
 	}
@@ -148,6 +154,22 @@ func form(kv ...string) func(string) string {
 		v.Set(kv[i], kv[i+1])
 	}
 	return v.Get
+}
+
+// mustSubmit queues sub and fails the test unless a new job was created.
+func mustSubmit(t *testing.T, q *Queue, sub submission) {
+	t.Helper()
+	if created, err := q.Submit(sub); !created || err != nil {
+		t.Fatalf("submit %s = %v, %v; want a new job", sub.Login, created, err)
+	}
+}
+
+// closeOK closes c and fails the test on error.
+func closeOK(t *testing.T, c io.Closer) {
+	t.Helper()
+	if err := c.Close(); err != nil {
+		t.Error(err)
+	}
 }
 
 // signedIn parses a form and attaches token, as the sign-in callback does.
@@ -257,7 +279,7 @@ func TestStorePublishReplacesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer closeOK(t, s)
 
 	publishTest(t, s, "Octo-Cat")
 	first, _ := os.Readlink(filepath.Join(dir, "octo-cat"))
@@ -274,7 +296,7 @@ func TestStorePublishReplacesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open card: %v", err)
 	}
-	f.Close()
+	closeOK(t, f)
 	if m, err := s.Meta("octo-cat"); err != nil || m.Login != "octo-cat" {
 		t.Errorf("meta = %+v, %v", m, err)
 	}
@@ -289,7 +311,7 @@ func TestStoreRejectsTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer closeOK(t, s)
 	publishTest(t, s, "octocat")
 
 	probes := [][3]string{
@@ -303,7 +325,7 @@ func TestStoreRejectsTraversal(t *testing.T) {
 	for _, p := range probes {
 		if f, err := s.OpenCard(p[0], p[1], p[2]); !errors.Is(err, fs.ErrNotExist) {
 			if f != nil {
-				f.Close()
+				closeOK(t, f)
 			}
 			t.Errorf("OpenCard(%q) err = %v, want not-exist", p, err)
 		}
@@ -320,7 +342,7 @@ func TestStoreSweepsOrphans(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishTest(t, s, "octocat")
-	s.Close()
+	closeOK(t, s)
 
 	orphan := filepath.Join(dir, genDir, "ghost-1")
 	if err := os.MkdirAll(orphan, 0o755); err != nil {
@@ -333,7 +355,7 @@ func TestStoreSweepsOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer closeOK(t, s)
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Error("orphan generation survived")
 	}
@@ -351,7 +373,7 @@ func TestStoreExpiresOldCards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer closeOK(t, s)
 	publishTest(t, s, "fresh")
 	old := time.Now().UTC().Add(-25 * time.Hour)
 	if err := s.Publish(&github.Profile{Login: "stale"}, Meta{Login: "stale", GeneratedAt: old, Scope: "public"}); err != nil {
@@ -408,7 +430,7 @@ func TestQueueOwnSignIn(t *testing.T) {
 
 	// A job without a sign-in token never fetches.
 	sub := signedIn(t, "", "user", "octocat")
-	s.queue.Submit(sub)
+	mustSubmit(t, s.queue, sub)
 	if st := waitIdle(t, s.queue, "octocat"); st.State != stateFailed || st.Error != errNoToken.Error() {
 		t.Fatalf("token-less job = %+v", st)
 	}
@@ -418,7 +440,7 @@ func TestQueueOwnSignIn(t *testing.T) {
 
 	// A sign-in as the target account keeps private scope; the token is
 	// used for the job, revoked, and never persisted.
-	s.queue.Submit(signedIn(t, testToken, "user", "boss", "include_private", "1"))
+	mustSubmit(t, s.queue, signedIn(t, testToken, "user", "boss", "include_private", "1"))
 	if st := waitIdle(t, s.queue, "boss"); st.State != stateDone {
 		t.Fatalf("own sign-in job = %+v", st)
 	}
@@ -468,7 +490,10 @@ func TestHandlers(t *testing.T) {
 	for _, want := range []string{
 		`<summary>Or use your own token</summary>`,
 		`name="token" type="password"`,
-		`href="https://github.com/settings/tokens/new?scopes=repo,read:user&amp;description=ghglance"`,
+		// Without JavaScript the link asks for public access only; app.js
+		// adds repo while private repos are ticked.
+		`href="https://github.com/settings/tokens/new?scopes=read:user&amp;description=ghglance"`,
+		`data-token-link`,
 		`target="_blank" rel="noopener noreferrer"`,
 		"never stored, never logged",
 		"visible on this site to anyone with the page link",
@@ -602,8 +627,9 @@ func TestRateLimiterRefills(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := newRateLimiter(2, time.Minute)
 	l.now = func() time.Time { return now }
-	if !l.Allow("a") || !l.Allow("a") || l.Allow("a") {
-		t.Fatal("burst not enforced")
+	first, second, third := l.Allow("a"), l.Allow("a"), l.Allow("a")
+	if !first || !second || third {
+		t.Fatalf("burst of 2: allowed %v, %v, %v; want true, true, false", first, second, third)
 	}
 	now = now.Add(time.Minute)
 	if !l.Allow("a") || l.Allow("a") {
@@ -699,9 +725,9 @@ func TestForeignTokenScope(t *testing.T) {
 	s := newTestServer(t, f)
 
 	// A private-capable sign-in is only good for its own account.
-	s.queue.Submit(signedIn(t, testToken, "user", "xavier", "include_private", "1"))
-	if st := waitIdle(t, s.queue, "xavier"); st.State != stateFailed || !strings.Contains(st.Error, "signed in as alice") {
-		t.Fatalf("private-capable foreign token job = %+v", st)
+	mustSubmit(t, s.queue, signedIn(t, testToken, "user", "xavier", "include_private", "1"))
+	if st := waitIdle(t, s.queue, "xavier"); st.State != stateFailed || st.Error != errForeignPrivate.Error() || strings.Contains(st.Error, "alice") {
+		t.Fatalf("private-capable foreign token job = %+v; want a refusal that does not name the signed-in account", st)
 	}
 	if f.callCount() != 0 {
 		t.Fatal("fetched another user with a private-capable token")
@@ -709,7 +735,7 @@ func TestForeignTokenScope(t *testing.T) {
 
 	// A public-only sign-in renders public scope for someone else.
 	sub := signedIn(t, publicToken, "user", "xavier", "include_private", "1", "include_org_repos", "1")
-	s.queue.Submit(sub)
+	mustSubmit(t, s.queue, sub)
 	if st := waitIdle(t, s.queue, "xavier"); st.State != stateDone {
 		t.Fatalf("public foreign token job = %+v", st)
 	}
@@ -721,7 +747,7 @@ func TestForeignTokenScope(t *testing.T) {
 	}
 
 	// ...and does not skip the cooldown on that account...
-	s.queue.Submit(sub)
+	mustSubmit(t, s.queue, sub)
 	if st := waitIdle(t, s.queue, "xavier"); st.State != stateFailed || st.Error != errFresh.Error() {
 		t.Fatalf("foreign sign-in during cooldown = %+v", st)
 	}
@@ -733,7 +759,7 @@ func TestForeignTokenScope(t *testing.T) {
 	s.queue.mu.Lock()
 	s.queue.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
 	s.queue.mu.Unlock()
-	s.queue.Submit(sub)
+	mustSubmit(t, s.queue, sub)
 	if st := waitIdle(t, s.queue, "xavier"); st.State != stateDone {
 		t.Fatalf("foreign sign-in after the cooldown = %+v", st)
 	}
@@ -751,7 +777,7 @@ func TestPartialFetchIsNotPublished(t *testing.T) {
 	f.mu.Lock()
 	f.stall = true
 	f.mu.Unlock()
-	s.queue.Submit(signedIn(t, testToken, "user", "octocat"))
+	mustSubmit(t, s.queue, signedIn(t, testToken, "user", "octocat"))
 	if st := waitIdle(t, s.queue, "octocat"); st.State != stateFailed || !strings.Contains(st.Error, "timed out") {
 		t.Fatalf("stalled job = %+v", st)
 	}
@@ -773,9 +799,15 @@ func TestPendingNoticeOnlyWhileActive(t *testing.T) {
 		return rec.Body.String()
 	}
 
-	s.queue.Submit(signedIn(t, testToken, "user", "octocat"))
-	if !strings.Contains(get(), notice) {
+	mustSubmit(t, s.queue, signedIn(t, testToken, "user", "octocat"))
+	body := get()
+	if !strings.Contains(body, notice) {
 		t.Error("pending notice missing while the job runs")
+	}
+	// Only app.js refreshes the page; without it the visitor is told to.
+	if !strings.Contains(body, `<span class="js-only">This page refreshes`) ||
+		!strings.Contains(body, `<span class="no-js">Reload this page to check progress.</span>`) {
+		t.Error("progress box does not separate the JavaScript refresh from the manual reload")
 	}
 	close(f.gate)
 	waitIdle(t, s.queue, "octocat")
@@ -802,5 +834,90 @@ func TestRateLimitedPostKeepsForm(t *testing.T) {
 	}
 	if !strings.Contains(body, "--bad") || !strings.Contains(body, "Asia/Saigon") || !strings.Contains(body, `value="123"`) {
 		t.Error("429 page dropped the submitted form")
+	}
+}
+
+func TestQueueCapsJobsPerSubmitter(t *testing.T) {
+	const (
+		otherToken = "ghp_otherOWNERvalue0123456789abcdef"
+		upperToken = "ghp_upperCASEDvalue0123456789abcdef"
+	)
+	f := &fakeFetcher{gate: make(chan struct{}), tokens: map[string]github.TokenInfo{
+		testToken:  {Login: "mallory"},
+		upperToken: {Login: "MALLORY"},
+		otherToken: {Login: "bob"},
+	}}
+	s := newTestServer(t, f)
+	pasted := func(token, login string) submission {
+		return submission{Login: login, Token: token, Pasted: true, Options: Options{TZ: "UTC", StartOfWeek: "sunday"}}
+	}
+
+	// Sign-ins and pasted tokens of one account share its allowance.
+	mustSubmit(t, s.queue, signedIn(t, testToken, "user", "target1"))
+	mustSubmit(t, s.queue, signedIn(t, testToken, "user", "target2"))
+	mustSubmit(t, s.queue, pasted(upperToken, "target3"))
+	for _, sub := range []submission{pasted(testToken, "target4"), signedIn(t, upperToken, "user", "target4")} {
+		if created, err := s.queue.Submit(sub); created || !errors.Is(err, errTooManyJobs) {
+			t.Fatalf("submission past the per-account cap = %v, %v; want errTooManyJobs", created, err)
+		}
+	}
+	if st := s.queue.Status("target4"); st.State != stateNone {
+		t.Errorf("refused submission left a job: %+v", st)
+	}
+	// Another account is not held back.
+	mustSubmit(t, s.queue, pasted(otherToken, "target4"))
+
+	close(f.gate)
+	for _, login := range []string{"target1", "target2", "target3", "target4"} {
+		if st := waitIdle(t, s.queue, login); st.State != stateDone {
+			t.Fatalf("%s = %+v", login, st)
+		}
+	}
+	// Finished jobs free the allowance.
+	mustSubmit(t, s.queue, pasted(testToken, "target5"))
+	waitIdle(t, s.queue, "target5")
+}
+
+func TestQueueRefusesRejectedToken(t *testing.T) {
+	f := &fakeFetcher{tokenErr: errors.New("401 Bad credentials")}
+	s := newTestServer(t, f)
+
+	sub := signedIn(t, testToken, "user", "octocat")
+	if created, err := s.queue.Submit(sub); created || err == nil || err.Error() != "GitHub did not accept your sign-in token" {
+		t.Errorf("rejected sign-in token = %v, %v", created, err)
+	}
+	sub.Pasted = true
+	if created, err := s.queue.Submit(sub); created || err == nil || err.Error() != "GitHub did not accept your token" {
+		t.Errorf("rejected pasted token = %v, %v", created, err)
+	}
+	if st := s.queue.Status("octocat"); st.State != stateNone {
+		t.Errorf("rejected token queued a job: %+v", st)
+	}
+	if f.callCount() != 0 {
+		t.Error("fetched with a rejected token")
+	}
+}
+
+func TestSubmittedTimezoneIsNotAutodetected(t *testing.T) {
+	s := newTestServer(t, &fakeFetcher{})
+	h := s.Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "data-autotz") {
+		t.Error("blank form does not ask for the browser timezone")
+	}
+
+	// A rejected post keeps the timezone the visitor typed, UTC included.
+	req := httptest.NewRequest(http.MethodPost, "/auth/start", strings.NewReader("user=--bad&tz=UTC"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "198.51.100.30:1"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid post = %d", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "data-autotz") || !strings.Contains(body, `value="UTC"`) {
+		t.Error("re-rendered form lets the browser timezone replace the submitted one")
 	}
 }

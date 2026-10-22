@@ -17,7 +17,7 @@ import (
 // the log.
 func assertTokenNowhere(t *testing.T, s *Server, logs *lockedBuffer, token string) {
 	t.Helper()
-	filepath.WalkDir(s.store.dir, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(s.store.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
@@ -27,6 +27,9 @@ func assertTokenNowhere(t *testing.T, s *Server, logs *lockedBuffer, token strin
 		}
 		return nil
 	})
+	if err != nil {
+		t.Error(err)
+	}
 	if strings.Contains(logs.String(), token) {
 		t.Errorf("log contains the token:\n%s", logs.String())
 	}
@@ -104,8 +107,8 @@ func TestPastedTokenForeignAccount(t *testing.T) {
 
 	// A token that can read private repos is only good for its owner.
 	post(testToken, "203.0.113.70")
-	if st := waitIdle(t, s.queue, "xavier"); st.State != stateFailed || !strings.Contains(st.Error, "your token belongs to alice") {
-		t.Fatalf("private-capable foreign token = %+v", st)
+	if st := waitIdle(t, s.queue, "xavier"); st.State != stateFailed || st.Error != errForeignPrivatePasted.Error() || strings.Contains(st.Error, "alice") {
+		t.Fatalf("private-capable foreign token = %+v; want a refusal that does not name the token's account", st)
 	}
 	if f.callCount() != 0 {
 		t.Fatal("fetched another user with a private-capable token")
@@ -179,4 +182,44 @@ func TestPastedTokenNotRevokedOnShutdown(t *testing.T) {
 	if got := g.revokedTokens(); len(got) != 0 {
 		t.Errorf("revoked %d pasted tokens on shutdown, want 0", len(got))
 	}
+}
+
+func TestPastedOwnTokenScopeFollowsTick(t *testing.T) {
+	logs := captureLog(t)
+	const publicToken = "ghp_publicONLYvalue0123456789abcdef"
+	g := newFakeGitHub(t)
+	f := &fakeFetcher{tokens: map[string]github.TokenInfo{
+		testToken:   {Login: "octocat", CanReadPrivate: true},
+		publicToken: {Login: "octocat"},
+	}}
+	s := newOAuthTestServer(t, f, g)
+	h := s.Handler()
+
+	// GitHub folds private contributions into the totals for a token that
+	// can see them, so an unticked box cannot keep them off the cards.
+	rec := startSignIn(h, url.Values{"user": {"octocat"}, "token": {testToken}}, "203.0.113.90")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("post = %d: %s", rec.Code, rec.Body.String())
+	}
+	if st := waitIdle(t, s.queue, "octocat"); st.State != stateFailed || st.Error != errOwnPrivateUntickedPasted.Error() {
+		t.Fatalf("own private-capable token, private unticked = %+v", st)
+	}
+	if f.callCount() != 0 {
+		t.Fatal("fetched with a private-capable token while private repos were unticked")
+	}
+
+	// A token that cannot read private repos yields public data, ticked
+	// or not.
+	rec = startSignIn(h, url.Values{"user": {"octocat"}, "include_private": {"1"}, "token": {publicToken}}, "203.0.113.91")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("post = %d: %s", rec.Code, rec.Body.String())
+	}
+	if st := waitIdle(t, s.queue, "octocat"); st.State != stateDone {
+		t.Fatalf("own public token = %+v", st)
+	}
+	if m, err := s.store.Meta("octocat"); err != nil || m.Scope != "public" {
+		t.Errorf("meta = %+v, %v; want public scope", m, err)
+	}
+	assertTokenNowhere(t, s, logs, testToken)
+	assertTokenNowhere(t, s, logs, publicToken)
 }

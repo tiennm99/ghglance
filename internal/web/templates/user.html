@@ -18,7 +18,9 @@
   <div>
     <p id="progress-text" role="status" aria-live="polite">{{if eq .Job.State "queued"}}Queued{{if .Job.Position}}, position {{.Job.Position}}{{end}}{{else}}Running: {{.Job.Stage}}{{end}}</p>
     <p class="hint" id="progress-elapsed"></p>
-    <p class="hint">Large profiles take a few minutes. This page refreshes when the cards are ready.</p>
+    <p class="hint">Large profiles take a few minutes.
+      <span class="js-only">This page refreshes when the cards are ready.</span>
+      <span class="no-js">Reload this page to check progress.</span></p>
   </div>
 </div>
 {{else if eq .Job.State "failed"}}
