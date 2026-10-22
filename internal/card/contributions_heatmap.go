@@ -2,6 +2,7 @@ package card
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -23,7 +24,8 @@ func (contributionsHeatmapCard) SVG(p *github.Profile, t theme.Theme) ([]byte, e
 // halves lets each half be 27 weeks wide at 8×8 cells — 4× the cell area
 // and distinctly more readable, while the year still reads top-to-bottom
 // left-to-right. Cell color mixes theme.Background with theme.Accent in
-// four intensity buckets so every palette inherits a usable heatmap.
+// four intensity buckets scaled to the busiest day, so every palette
+// inherits a usable heatmap.
 // weekStart controls which weekday sits on row 0 (default time.Sunday).
 func renderHeatmap(title string, days []github.DailyContribution, weekStart time.Weekday, t theme.Theme) []byte {
 	const (
@@ -51,14 +53,8 @@ func renderHeatmap(title string, days []github.DailyContribution, weekStart time
 	cells := padToWeekGrid(days, weekStart)
 	weeks := len(cells) / 7
 
-	buckets := intensityThresholds(cells)
-	ramp := [5]string{
-		mixHex(t.Background, t.Accent, 0.00),
-		mixHex(t.Background, t.Accent, 0.25),
-		mixHex(t.Background, t.Accent, 0.50),
-		mixHex(t.Background, t.Accent, 0.75),
-		mixHex(t.Background, t.Accent, 1.00),
-	}
+	maxCount := maxDailyCount(cells)
+	ramp := heatmapRamp(t)
 
 	// Split the year at the week boundary nearest the middle — the top half
 	// gets the ceiling so the first half holds ≥ the second when weeks is odd.
@@ -73,7 +69,7 @@ func renderHeatmap(title string, days []github.DailyContribution, weekStart time
 	}
 
 	for _, h := range halves {
-		renderHeatmapHalf(&b, cells, h.startWeek, h.endWeek, h.topPad, leftPad, cellSize, cellGap, ramp, buckets, weekStart, t)
+		renderHeatmapHalf(&b, cells, h.startWeek, h.endWeek, h.topPad, leftPad, cellSize, cellGap, ramp, maxCount, weekStart, t)
 	}
 
 	b.WriteString(footer)
@@ -84,7 +80,7 @@ func renderHeatmap(title string, days []github.DailyContribution, weekStart time
 // left, month labels above, and the 7×(endWeek-startWeek) grid itself.
 // Labels are printed on odd rows (1, 3, 5) so the 3-per-column cadence
 // matches GitHub's own calendar regardless of which weekday starts the week.
-func renderHeatmapHalf(b *strings.Builder, cells []github.DailyContribution, startWeek, endWeek, topPad, leftPad, cellSize, cellGap int, ramp [5]string, buckets [4]int, weekStart time.Weekday, t theme.Theme) {
+func renderHeatmapHalf(b *strings.Builder, cells []github.DailyContribution, startWeek, endWeek, topPad, leftPad, cellSize, cellGap int, ramp [5]string, maxCount int, weekStart time.Weekday, t theme.Theme) {
 	for i := 0; i < 7; i++ {
 		if i%2 == 0 {
 			continue
@@ -123,7 +119,7 @@ func renderHeatmapHalf(b *strings.Builder, cells []github.DailyContribution, sta
 			if cell.Date.IsZero() {
 				continue
 			}
-			fill := ramp[bucketFor(cell.Count, buckets)]
+			fill := ramp[bucketFor(cell.Count, maxCount)]
 			x := leftPad + (w-startWeek)*(cellSize+cellGap)
 			y := topPad + d*(cellSize+cellGap)
 			fmt.Fprintf(b, `
@@ -157,63 +153,83 @@ func padToWeekGrid(days []github.DailyContribution, weekStart time.Weekday) []gi
 // two cards agree on spelling.
 var weekdayShort = [7]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 
-// intensityThresholds picks four cutoffs from the non-zero counts so cells
-// distribute across the 5-bucket ramp. Quartile-ish without a sort cost.
-func intensityThresholds(cells []github.DailyContribution) [4]int {
-	var max int
+// heatmapRamp returns the five cell colors, from an empty day (bucket 0, the
+// card background) to the busiest day (bucket 4, the accent).
+func heatmapRamp(t theme.Theme) [5]string {
+	return [5]string{
+		mixHex(t.Background, t.Accent, 0.00),
+		mixHex(t.Background, t.Accent, 0.25),
+		mixHex(t.Background, t.Accent, 0.50),
+		mixHex(t.Background, t.Accent, 0.75),
+		mixHex(t.Background, t.Accent, 1.00),
+	}
+}
+
+// maxDailyCount returns the busiest day's contribution count.
+func maxDailyCount(cells []github.DailyContribution) int {
+	m := 0
 	for _, c := range cells {
-		if c.Count > max {
-			max = c.Count
-		}
+		m = max(m, c.Count)
 	}
-	if max == 0 {
-		return [4]int{1, 2, 3, 4}
-	}
-	// Simple linear split — works well for the common case. Power users with
-	// a long right tail still fall into bucket 4 without being clipped.
-	return [4]int{
-		1,
-		max / 4,
-		max / 2,
-		(3 * max) / 4,
-	}
+	return m
 }
 
-func bucketFor(count int, thresholds [4]int) int {
-	switch {
-	case count <= 0:
+// bucketFor maps a day's count to a ramp index: 0 for no contributions,
+// otherwise ceil(4*count/maxCount), so the busiest day always gets the full
+// accent and any active day gets at least bucket 1.
+func bucketFor(count, maxCount int) int {
+	if count <= 0 || maxCount <= 0 {
 		return 0
-	case count < thresholds[1]:
-		return 1
-	case count < thresholds[2]:
-		return 2
-	case count < thresholds[3]:
-		return 3
-	default:
-		return 4
 	}
+	return min(4, (4*count+maxCount-1)/maxCount)
 }
 
-// mixHex blends two "#rrggbb" colors at the given ratio (0 returns a, 1 returns b).
-// Non-hex or short inputs fall back to b so a misconfigured theme still renders.
+// mixHex blends two "#rrggbb" or "#rrggbbaa" colors at the given ratio
+// (0 returns a, 1 returns b). Opaque inputs blend channel by channel and
+// return "#rrggbb". When either input carries alpha, the blend runs on
+// premultiplied RGBA and returns "#rrggbbaa", so a transparent background
+// fades the accent in rather than blending from black, and a translucent
+// accent keeps its alpha. Unparseable inputs fall back to b so a
+// misconfigured theme still renders.
 func mixHex(a, b string, ratio float64) string {
-	ar, ag, ab, ok := parseHex(a)
-	br, bg, bb, okb := parseHex(b)
+	ar, ag, ab, aa, ok := parseHex(a)
+	br, bg, bb, ba, okb := parseHex(b)
 	if !ok || !okb {
 		return b
 	}
-	r := int(float64(ar)*(1-ratio) + float64(br)*ratio)
-	g := int(float64(ag)*(1-ratio) + float64(bg)*ratio)
-	bl := int(float64(ab)*(1-ratio) + float64(bb)*ratio)
-	return fmt.Sprintf("#%02x%02x%02x", r, g, bl)
+	if aa == 255 && ba == 255 {
+		r := int(float64(ar)*(1-ratio) + float64(br)*ratio)
+		g := int(float64(ag)*(1-ratio) + float64(bg)*ratio)
+		bl := int(float64(ab)*(1-ratio) + float64(bb)*ratio)
+		return fmt.Sprintf("#%02x%02x%02x", r, g, bl)
+	}
+	wa := float64(aa) / 255 * (1 - ratio)
+	wb := float64(ba) / 255 * ratio
+	alpha := wa + wb
+	if alpha == 0 {
+		return fmt.Sprintf("#%02x%02x%02x00", ar, ag, ab)
+	}
+	ch := func(x, y int) int {
+		return int(math.Round((float64(x)*wa + float64(y)*wb) / alpha))
+	}
+	return fmt.Sprintf("#%02x%02x%02x%02x",
+		ch(ar, br), ch(ag, bg), ch(ab, bb), int(math.Round(alpha*255)))
 }
 
-func parseHex(s string) (r, g, b int, ok bool) {
-	if len(s) != 7 || s[0] != '#' {
-		return 0, 0, 0, false
+// parseHex reads "#rrggbb" (alpha 255) or "#rrggbbaa".
+func parseHex(s string) (r, g, b, a int, ok bool) {
+	if (len(s) != 7 && len(s) != 9) || s[0] != '#' {
+		return 0, 0, 0, 0, false
 	}
-	if _, err := fmt.Sscanf(s[1:], "%02x%02x%02x", &r, &g, &b); err != nil {
-		return 0, 0, 0, false
+	a = 255
+	var err error
+	if len(s) == 9 {
+		_, err = fmt.Sscanf(s[1:], "%02x%02x%02x%02x", &r, &g, &b, &a)
+	} else {
+		_, err = fmt.Sscanf(s[1:], "%02x%02x%02x", &r, &g, &b)
 	}
-	return r, g, b, true
+	if err != nil {
+		return 0, 0, 0, 0, false
+	}
+	return r, g, b, a, true
 }

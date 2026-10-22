@@ -54,33 +54,12 @@ func renderProductiveTime(title string, data [24]int, t theme.Theme) []byte {
 	var b strings.Builder
 	b.WriteString(header(width, height, t.Background, t.Stroke, t.StrokeOpacity, t.Title, title))
 
-	max := 0
+	maxVal := 0
 	for _, v := range data {
-		if v > max {
-			max = v
-		}
+		maxVal = max(maxVal, v)
 	}
-	yMax := float64(max)
-	if yMax == 0 {
-		yMax = 1
-	}
-	ticks := niceTicks(yMax, 5)
-	if len(ticks) > 0 {
-		yMax = ticks[len(ticks)-1]
-	}
-
-	// Y-axis: vertical line + tick marks with labels.
-	fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>`,
-		leftAxis, topPad, leftAxis, topPad+chartH, t.Muted)
-	for _, v := range ticks {
-		y := topPad + chartH - int(float64(chartH)*v/yMax)
-		fmt.Fprintf(&b, `
-  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="end">%s</text>`,
-			leftAxis-4, y, leftAxis, y, t.Muted,
-			leftAxis-6, y+3, t.Muted, escapeXML(formatTick(v)))
-	}
+	yMax, ticks := yScale(maxVal)
+	writeYAxis(&b, axisLeft, leftAxis, topPad, chartH, ticks, yMax, t.Muted)
 
 	// X-axis: horizontal line + tick labels.
 	fmt.Fprintf(&b, `
@@ -90,9 +69,9 @@ func renderProductiveTime(title string, data [24]int, t theme.Theme) []byte {
 		x := leftAxis + int(barW*float64(h)+float64(barGap*h)+barW/2)
 		fmt.Fprintf(&b, `
   <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>
-  <text x="%d" y="%d" font-size="10" fill="%s" text-anchor="middle">%d</text>`,
+  <text x="%d" y="%d" font-size="%d" fill="%s" text-anchor="middle">%d</text>`,
 			x, topPad+chartH, x, topPad+chartH+4, t.Muted,
-			x, topPad+chartH+16, t.Muted, h)
+			x, topPad+chartH+16, fontAxis, t.Muted, h)
 	}
 
 	// Bars.
@@ -108,8 +87,8 @@ func renderProductiveTime(title string, data [24]int, t theme.Theme) []byte {
 
 	// X-axis caption.
 	fmt.Fprintf(&b, `
-  <text x="%d" y="%d" font-size="11" fill="%s" text-anchor="middle">hour of day</text>`,
-		leftAxis+chartW/2, topPad+chartH+34, t.Muted)
+  <text x="%d" y="%d" font-size="%d" fill="%s" text-anchor="middle">hour of day</text>`,
+		leftAxis+chartW/2, topPad+chartH+34, fontLabel, t.Muted)
 
 	b.WriteString(footer)
 	return []byte(b.String())

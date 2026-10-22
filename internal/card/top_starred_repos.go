@@ -40,7 +40,7 @@ func (topStarredReposCard) SVG(p *github.Profile, t theme.Theme) ([]byte, error)
 
 	if len(repos) == 0 {
 		fmt.Fprintf(&b, `
-  <text x="25" y="100" font-size="13" fill="%s">No public repos with stars.</text>`, t.Muted)
+  <text x="25" y="100" font-size="13" fill="%s">No starred repos yet.</text>`, t.Muted)
 		b.WriteString(footer)
 		return []byte(b.String()), nil
 	}
@@ -63,9 +63,9 @@ func (topStarredReposCard) SVG(p *github.Profile, t theme.Theme) ([]byte, error)
 
 		fmt.Fprintf(&b, `
   <circle cx="%d" cy="%d" r="4" fill="%s"/>
-  <text x="%d" y="%d" font-size="12" fill="%s">%s</text>`,
+  <text x="%d" y="%d" font-size="%d" fill="%s">%s</text>`,
 			rowX+4, y-4, langColor,
-			rowX+14, y, t.Text, escapeXML(name))
+			rowX+14, y, fontBody, t.Text, escapeXML(name))
 
 		bw := float64(barW) * float64(r.Stars) / float64(maxStars)
 		fmt.Fprintf(&b, `
@@ -75,8 +75,8 @@ func (topStarredReposCard) SVG(p *github.Profile, t theme.Theme) ([]byte, error)
 			barX, y-barH+2, bw, barH, t.Accent)
 
 		fmt.Fprintf(&b, `
-  <text x="%d" y="%d" font-size="12" font-weight="600" fill="%s" text-anchor="end">%s ★</text>`,
-			valueX, y, t.Accent, escapeXML(formatInt(r.Stars)))
+  <text x="%d" y="%d" font-size="%d" font-weight="600" fill="%s" text-anchor="end">%s ★</text>`,
+			valueX, y, fontBody, t.Accent, escapeXML(formatInt(r.Stars)))
 	}
 
 	b.WriteString(footer)

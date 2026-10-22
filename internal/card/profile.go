@@ -51,9 +51,9 @@ func (profileCard) SVG(p *github.Profile, t theme.Theme) ([]byte, error) {
 		// icon glyph: translate to row position, scale down, fill with muted.
 		fmt.Fprintf(&b, `
   <g transform="translate(%d,%.2f) scale(%.3f)" fill="%s">%s</g>
-  <text x="%d" y="%d" font-size="12" fill="%s">%s</text>`,
+  <text x="%d" y="%d" font-size="%d" fill="%s">%s</text>`,
 			rowX, float64(y-iconSize+2), scale, t.Muted, r.icon,
-			rowX+iconSize+8, y, t.Text, escapeXML(truncate(r.value, rowMaxChars)))
+			rowX+iconSize+8, y, fontBody, t.Text, escapeXML(truncate(r.value, rowMaxChars)))
 	}
 
 	b.WriteString(footer)
