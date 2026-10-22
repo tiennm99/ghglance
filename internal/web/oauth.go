@@ -37,9 +37,10 @@ const (
 	// new one refused, so a flood of starts cannot lock real visitors out:
 	// a real sign-in only has to outlive the next maxPendingLogins starts.
 	maxPendingLogins = 1000
-	// maxPendingPerClient bounds the sign-ins one client key holds at once;
-	// a further start evicts that client's earliest one, which also keeps a
-	// visitor who clicks sign-in again working.
+	// maxPendingPerClient bounds the sign-ins one client key holds at once.
+	// A further start is refused rather than evicting one, because a client
+	// key is an address that browsers behind one NAT share; a browser that
+	// clicks sign-in again replaces its own earlier sign-in instead.
 	maxPendingPerClient = 3
 	// oauthCookie binds the browser that started a sign-in to its state.
 	// Over https it carries the __Host- prefix, so a sibling subdomain
@@ -200,6 +201,10 @@ func (a *oauthApp) authorizeURL(state, challenge, scope, login string) string {
 
 var errExchange = errors.New("GitHub sign-in failed, try again")
 
+// errTooManyLogins refuses a sign-in start from a client key that already
+// has maxPendingPerClient sign-ins waiting for GitHub.
+var errTooManyLogins = errors.New("too many sign-ins are waiting for GitHub from your address; finish one or try again in a few minutes")
+
 // exchange trades an authorization code and its PKCE verifier for a token
 // and the scopes GitHub granted.
 func (a *oauthApp) exchange(ctx context.Context, code, verifier string) (token, scope string, err error) {
@@ -293,20 +298,25 @@ func newPendingLogins() *pendingLogins {
 	return &pendingLogins{now: time.Now, entries: map[string]*pendingLogin{}}
 }
 
-// add stores p under a fresh random state and returns the state. It drops
-// expired sign-ins, then makes room by evicting p.client's earliest-expiring
-// sign-in when that client is at maxPendingPerClient, or else the
-// earliest-expiring of all when the table is at maxPendingLogins.
-func (l *pendingLogins) add(p *pendingLogin) (string, error) {
+// add stores p under a fresh random state and returns the state. replaces
+// is the state in the starting browser's cookie, if any: that browser's
+// earlier sign-in, which the new cookie supersedes, so it is dropped first.
+// add drops expired sign-ins, refuses p with errTooManyLogins when p.client
+// already holds maxPendingPerClient, and otherwise makes room by evicting
+// the earliest-expiring of all when the table is at maxPendingLogins.
+func (l *pendingLogins) add(p *pendingLogin, replaces string) (string, error) {
 	state, err := randomString()
 	if err != nil {
 		return "", err
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if replaces != "" {
+		delete(l.entries, replaces)
+	}
 	now := l.now()
-	var oldest, oldestOwn string
-	var oldestAt, oldestOwnAt time.Time
+	var oldest string
+	var oldestAt time.Time
 	own := 0
 	for k, e := range l.entries {
 		if !now.Before(e.expires) {
@@ -318,15 +328,12 @@ func (l *pendingLogins) add(p *pendingLogin) (string, error) {
 		}
 		if e.client == p.client {
 			own++
-			if oldestOwn == "" || e.expires.Before(oldestOwnAt) {
-				oldestOwn, oldestOwnAt = k, e.expires
-			}
 		}
 	}
-	switch {
-	case own >= maxPendingPerClient:
-		delete(l.entries, oldestOwn)
-	case len(l.entries) >= maxPendingLogins:
+	if own >= maxPendingPerClient {
+		return "", errTooManyLogins
+	}
+	if len(l.entries) >= maxPendingLogins {
 		delete(l.entries, oldest)
 	}
 	p.expires = now.Add(loginTTL)
@@ -391,7 +398,15 @@ func (s *Server) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		s.render(w, http.StatusInternalServerError, "index", pageData{Title: "ghglance", Error: capitalize(errExchange.Error()) + ".", Form: form})
 		return
 	}
-	state, err := s.logins.add(&pendingLogin{client: clientKey(r), sub: sub, form: form, verifier: verifier})
+	var replaces string
+	if c, err := r.Cookie(s.oauth.cookieName); err == nil {
+		replaces = c.Value
+	}
+	state, err := s.logins.add(&pendingLogin{client: clientKey(r), sub: sub, form: form, verifier: verifier}, replaces)
+	if errors.Is(err, errTooManyLogins) {
+		s.render(w, http.StatusTooManyRequests, "index", pageData{Title: "ghglance", Error: capitalize(err.Error()) + ".", Form: form})
+		return
+	}
 	if err != nil {
 		s.render(w, http.StatusInternalServerError, "index", pageData{Title: "ghglance", Error: capitalize(errExchange.Error()) + ".", Form: form})
 		return

@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"log"
@@ -412,7 +413,7 @@ func TestPendingLoginsEvictEarliestWhenFull(t *testing.T) {
 	l.now = func() time.Time { return now }
 	var first string
 	for i := range maxPendingLogins {
-		state, err := l.add(&pendingLogin{client: strconv.Itoa(i)})
+		state, err := l.add(&pendingLogin{client: strconv.Itoa(i)}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -421,7 +422,7 @@ func TestPendingLoginsEvictEarliestWhenFull(t *testing.T) {
 		}
 		now = now.Add(time.Millisecond)
 	}
-	state, err := l.add(&pendingLogin{client: "late"})
+	state, err := l.add(&pendingLogin{client: "late"}, "")
 	if err != nil {
 		t.Fatalf("add past the cap = %v, want the earliest sign-in evicted", err)
 	}
@@ -437,7 +438,7 @@ func TestPendingLoginsEvictEarliestWhenFull(t *testing.T) {
 
 	// Expired sign-ins are dropped before anything live is evicted.
 	now = now.Add(loginTTL)
-	if _, err := l.add(&pendingLogin{}); err != nil {
+	if _, err := l.add(&pendingLogin{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(l.entries) != 1 {
@@ -450,30 +451,38 @@ func TestPendingLoginsPerClientCap(t *testing.T) {
 	now := time.Now()
 	l.now = func() time.Time { return now }
 	var states []string
-	for range maxPendingPerClient + 2 {
-		state, err := l.add(&pendingLogin{client: "203.0.113.7"})
+	for range maxPendingPerClient {
+		state, err := l.add(&pendingLogin{client: "203.0.113.7"}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		states = append(states, state)
 		now = now.Add(time.Second)
 	}
-	other, err := l.add(&pendingLogin{client: "198.51.100.9"})
+	// Another browser behind the same address is refused; it never evicts
+	// a neighbour's sign-in.
+	if _, err := l.add(&pendingLogin{client: "203.0.113.7"}, ""); !errors.Is(err, errTooManyLogins) {
+		t.Fatalf("add past the per-client cap = %v, want errTooManyLogins", err)
+	}
+	// A browser starting again replaces its own earlier sign-in.
+	again, err := l.add(&pendingLogin{client: "203.0.113.7"}, states[0])
+	if err != nil {
+		t.Fatalf("restart from the same browser = %v", err)
+	}
+	other, err := l.add(&pendingLogin{client: "198.51.100.9"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(l.entries) != maxPendingPerClient+1 {
 		t.Errorf("%d entries, want %d for the busy client plus one", len(l.entries), maxPendingPerClient+1)
 	}
-	// The busy client keeps its latest sign-ins; the earliest were evicted.
-	for i, state := range states {
-		kept := l.take(state) != nil
-		if want := i >= len(states)-maxPendingPerClient; kept != want {
-			t.Errorf("sign-in %d kept = %v, want %v", i, kept, want)
-		}
+	if l.take(states[0]) != nil {
+		t.Error("the replaced sign-in survived")
 	}
-	if l.take(other) == nil {
-		t.Error("another client's sign-in was evicted")
+	for i, state := range append(states[1:], again, other) {
+		if l.take(state) == nil {
+			t.Errorf("sign-in %d was evicted", i)
+		}
 	}
 }
 
@@ -482,7 +491,7 @@ func TestOAuthStartEvictsWhenPendingFull(t *testing.T) {
 	s := newOAuthTestServer(t, &fakeFetcher{}, g)
 	h := s.Handler()
 	for i := range maxPendingLogins {
-		if _, err := s.logins.add(&pendingLogin{client: "filler-" + strconv.Itoa(i)}); err != nil {
+		if _, err := s.logins.add(&pendingLogin{client: "filler-" + strconv.Itoa(i)}, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
