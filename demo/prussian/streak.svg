@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="340" height="200" viewBox="0 0 340 200" font-family="'Segoe UI', Ubuntu, Sans-Serif">
   <rect x="0.5" y="0.5" width="339" height="199" rx="6" fill="#172f45" stroke="#000000" stroke-opacity="0.00"/>
   <text x="20" y="30" font-size="15" font-weight="600" fill="#bddfff">Streak</text>
-  <text x="56" y="95" font-size="28" font-weight="700" fill="#bddfff" text-anchor="middle">11</text>
+  <text x="56" y="95" font-size="28" font-weight="700" fill="#bddfff" text-anchor="middle">27</text>
   <text x="56" y="120" font-size="12" fill="#6e93b5" text-anchor="middle">Current streak</text>
-  <text x="56" y="140" font-size="10" fill="#38a0ff" text-anchor="middle">Sep 27 — Oct 7</text>
+  <text x="56" y="140" font-size="10" fill="#38a0ff" text-anchor="middle">Sep 27 — Oct 23</text>
   <text x="169" y="95" font-size="28" font-weight="700" fill="#bddfff" text-anchor="middle">176</text>
   <text x="169" y="120" font-size="12" fill="#6e93b5" text-anchor="middle">Longest streak</text>
   <text x="169" y="140" font-size="10" fill="#38a0ff" text-anchor="middle">Mar 30 — Sep 21</text>
-  <text x="282" y="95" font-size="28" font-weight="700" fill="#bddfff" text-anchor="middle">748</text>
+  <text x="282" y="95" font-size="28" font-weight="700" fill="#bddfff" text-anchor="middle">765</text>
   <text x="282" y="120" font-size="12" fill="#6e93b5" text-anchor="middle">Active days</text>
-  <text x="282" y="140" font-size="10" fill="#38a0ff" text-anchor="middle">of 3,202 total (23%)</text>
+  <text x="282" y="140" font-size="10" fill="#38a0ff" text-anchor="middle">of 3,218 total (23%)</text>
 </svg>

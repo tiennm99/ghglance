@@ -5,35 +5,35 @@
   <text x="34" y="55" font-size="12" fill="#e5289e">awesome-ai-dev-t…</text>
   <rect x="150" y="47" width="120" height="10" rx="3" fill="#e2e9ec" fill-opacity="0.15"/>
   <rect x="150" y="47" width="120.00" height="10" rx="3" fill="#e2e9ec"/>
-  <text x="334" y="55" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">3 ★</text>
-  <circle cx="24" cy="71" r="4" fill="#00ADD8"/>
-  <text x="34" y="75" font-size="12" fill="#e5289e">ghglance</text>
+  <text x="334" y="55" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">4 ★</text>
+  <circle cx="24" cy="71" r="4" fill="#e34c26"/>
+  <text x="34" y="75" font-size="12" fill="#e5289e">penny-pincher-pr…</text>
   <rect x="150" y="67" width="120" height="10" rx="3" fill="#e2e9ec" fill-opacity="0.15"/>
-  <rect x="150" y="67" width="40.00" height="10" rx="3" fill="#e2e9ec"/>
-  <text x="334" y="75" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">1 ★</text>
-  <circle cx="24" cy="91" r="4" fill="#f1e05a"/>
-  <text x="34" y="95" font-size="12" fill="#e5289e">ai-labs</text>
+  <rect x="150" y="67" width="60.00" height="10" rx="3" fill="#e2e9ec"/>
+  <text x="334" y="75" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">2 ★</text>
+  <circle cx="24" cy="91" r="4" fill="#3572A5"/>
+  <text x="34" y="95" font-size="12" fill="#e5289e">cheahjs-free-llm…</text>
   <rect x="150" y="87" width="120" height="10" rx="3" fill="#e2e9ec" fill-opacity="0.15"/>
-  <rect x="150" y="87" width="40.00" height="10" rx="3" fill="#e2e9ec"/>
+  <rect x="150" y="87" width="30.00" height="10" rx="3" fill="#e2e9ec"/>
   <text x="334" y="95" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">1 ★</text>
-  <circle cx="24" cy="111" r="4" fill="#e34c26"/>
-  <text x="34" y="115" font-size="12" fill="#e5289e">penny-pincher-pr…</text>
+  <circle cx="24" cy="111" r="4" fill="#00ADD8"/>
+  <text x="34" y="115" font-size="12" fill="#e5289e">ghglance</text>
   <rect x="150" y="107" width="120" height="10" rx="3" fill="#e2e9ec" fill-opacity="0.15"/>
-  <rect x="150" y="107" width="40.00" height="10" rx="3" fill="#e2e9ec"/>
+  <rect x="150" y="107" width="30.00" height="10" rx="3" fill="#e2e9ec"/>
   <text x="334" y="115" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">1 ★</text>
-  <circle cx="24" cy="131" r="4" fill="#dea584"/>
-  <text x="34" y="135" font-size="12" fill="#e5289e">time-mocker</text>
+  <circle cx="24" cy="131" r="4" fill="#f1e05a"/>
+  <text x="34" y="135" font-size="12" fill="#e5289e">ai-labs</text>
   <rect x="150" y="127" width="120" height="10" rx="3" fill="#e2e9ec" fill-opacity="0.15"/>
-  <rect x="150" y="127" width="40.00" height="10" rx="3" fill="#e2e9ec"/>
+  <rect x="150" y="127" width="30.00" height="10" rx="3" fill="#e2e9ec"/>
   <text x="334" y="135" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">1 ★</text>
-  <circle cx="24" cy="151" r="4" fill="#00ADD8"/>
-  <text x="34" y="155" font-size="12" fill="#e5289e">adventofcode</text>
+  <circle cx="24" cy="151" r="4" fill="#dea584"/>
+  <text x="34" y="155" font-size="12" fill="#e5289e">time-mocker</text>
   <rect x="150" y="147" width="120" height="10" rx="3" fill="#e2e9ec" fill-opacity="0.15"/>
-  <rect x="150" y="147" width="40.00" height="10" rx="3" fill="#e2e9ec"/>
+  <rect x="150" y="147" width="30.00" height="10" rx="3" fill="#e2e9ec"/>
   <text x="334" y="155" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">1 ★</text>
-  <circle cx="24" cy="171" r="4" fill="#3572A5"/>
-  <text x="34" y="175" font-size="12" fill="#e5289e">export-telegram-…</text>
+  <circle cx="24" cy="171" r="4" fill="#00ADD8"/>
+  <text x="34" y="175" font-size="12" fill="#e5289e">adventofcode</text>
   <rect x="150" y="167" width="120" height="10" rx="3" fill="#e2e9ec" fill-opacity="0.15"/>
-  <rect x="150" y="167" width="40.00" height="10" rx="3" fill="#e2e9ec"/>
+  <rect x="150" y="167" width="30.00" height="10" rx="3" fill="#e2e9ec"/>
   <text x="334" y="175" font-size="12" font-weight="600" fill="#e2e9ec" text-anchor="end">1 ★</text>
 </svg>
